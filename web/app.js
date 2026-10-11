@@ -85,7 +85,8 @@ class App extends React.Component {
       trip: null,
       admin: {open:false, pw:'', err:null, view:null, draft:null, ops:null, newPw:'', newPw2:'', counters:null, msg:null},
       setup: {site:'', agency:'', pw:'', pw2:'', op:'', pin:'', err:null},
-      ddIdx: -1, osk: null, oskShift: false, help: false, camWatch: false
+      ddIdx: -1, osk: null, oskShift: false, help: false, camWatch: false, oskMode: (() => { try { return localStorage.getItem('iswm-osk') === '1'; } catch (e) { return false; } })(),
+      photoBig: null
     };
   }
 
@@ -373,6 +374,7 @@ ${s.boot.needsSetup ? this.renderSetup() : s.loggedIn ? this.renderApp() : this.
 ${this.renderDialogs()}
 ${this.renderTrip()}
 ${this.renderOsk()}
+${this.state.photoBig && h`<div onClick=${() => this.setState({photoBig:null})} style=${css('position:absolute;inset:0;z-index:300;background:rgba(18,26,20,0.85);display:flex;align-items:center;justify-content:center;cursor:zoom-out')}><img src=${this.state.photoBig} alt="" style=${css('max-width:96%;max-height:94%;border-radius:8px')} /></div>`}
 ${this.renderHelp()}
 </div>
 </div>`;
@@ -414,6 +416,7 @@ ${this.renderHelp()}
     if (e.ctrlKey && e.shiftKey && (e.key === 'A' || e.key === 'a') && !s.boot.needsSetup) { e.preventDefault(); return this.openAdmin(); }
     if (e.key === 'F1') { e.preventDefault(); return this.setState({help:!s.help, dd:null}); }
     if (e.key === 'Escape') {
+      if (s.photoBig) return this.setState({photoBig:null});
       if (s.help) return this.setState({help:false});
       if (s.trip) return this.setState({trip:null});
       if (s.admin.open) return this.setState(st => ({admin:{...st.admin, open:false, pw:'', view:null, err:null, msg:null}}));
@@ -525,6 +528,7 @@ ${this.renderHelp()}
     <button onClick=${() => this.goTab('sync')} title="Open 5 Sync" style=${css('display:flex;align-items:center;gap:8px;height:36px;padding:0 14px;white-space:nowrap;border-radius:999px;border:2px solid #151515;background:' + syncPill.bg + ';color:' + syncPill.fg + ';font-size:14px;font-weight:700;cursor:pointer')}>
       ${syncPill.label}
     </button>
+    ${this.oskButton()}
     <button onClick=${() => this.toggleFull()} title=${fullLabel} aria-label=${fullLabel} style=${css('display:flex;align-items:center;justify-content:center;flex:none;width:38px;height:38px;padding:0;border-radius:50%;border:2px solid var(--ink-300);background:#fff;color:var(--ink-900);cursor:pointer')}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d=${fullIcon}></path></svg></button>
     ${this.adminButtons()}
     <button onClick=${endShift} title="End shift" style=${css('display:flex;flex-direction:column;align-items:flex-end;line-height:1.2;padding:0 0 0 4px;white-space:nowrap;border:none;background:none;cursor:pointer')}>
@@ -602,10 +606,10 @@ ${s.tab==='sync' && this.renderSync()}
       ${k.fields.map(fd => h`
         <div key=${fd.code} style=${css('position:relative;display:flex;flex-direction:column;gap:6px;width:' + fd.width + ';flex:none;padding:8px 10px;border:2px solid var(--ink-300);border-radius:14px;background:#fff')}>
           <span style=${css('display:flex;align-items:center;gap:8px;font-size:15px;font-weight:700;color:var(--ink-900);white-space:nowrap')}><span style=${css('display:inline-flex;align-items:center;justify-content:center;min-width:30px;height:24px;padding:0 7px;border-radius:999px;background:' + k.cc + ';color:' + k.ccFg + ';font-size:13px')}>${fd.code}</span>${fd.label}</span>
-          <${Input} id=${'fld-' + fd.key} data-osk-manual=${fd.readOnly ? undefined : '1'} autoComplete="off" placeholder=${fd.placeholder} value=${fd.value} readOnly=${fd.readOnly} onChange=${fd.onChange} onFocus=${fd.onFocus} onBlur=${fd.onBlur} onKeyDown=${fd.onKey} inputStyle=${fieldInput} />
+          <${Input} id=${'fld-' + fd.key} autoComplete="off" placeholder=${fd.placeholder} value=${fd.value} readOnly=${fd.readOnly} onChange=${fd.onChange} onFocus=${fd.onFocus} onBlur=${fd.onBlur} onKeyDown=${fd.onKey} inputStyle=${fieldInput} />
           ${fd.open && h`
             <div style=${css('position:absolute;left:0;right:0;bottom:calc(100% + 6px);z-index:30;background:#fff;border:2px solid var(--ink-300);border-radius:14px;box-shadow:var(--shadow-lg);padding:6px;display:flex;flex-direction:column;max-height:300px;overflow:auto')}>
-              ${!fd.readOnly && h`<button tabIndex=${-1} onMouseDown=${e => { e.preventDefault(); this.oskOpen(document.getElementById('fld-' + fd.key)); }} style=${css('display:flex;align-items:center;gap:8px;height:44px;flex:none;padding:0 12px;margin-bottom:4px;border:2px dashed var(--ink-300);border-radius:10px;background:var(--ink-050);cursor:pointer;font-size:16px;font-weight:700;color:var(--ink-900)')}><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"></rect><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"></path></svg>Type on screen</button>`}
+
               ${fd.options.map((o, oi) => h`
                 <button key=${o.label} tabIndex=${-1} onMouseDown=${o.pick} style=${css('display:flex;align-items:center;justify-content:space-between;gap:10px;height:48px;flex:none;padding:0 14px;border:' + (oi === s.ddIdx ? '2px solid #0E5230' : '2px solid transparent') + ';border-radius:10px;background:' + (oi === s.ddIdx ? '#E4F6E9' : o.bg) + ';cursor:pointer;text-align:left;white-space:nowrap')}>
                   <span style=${css('font-size:20px;color:var(--ink-900);letter-spacing:0.02em')}>${o.label}</span>
@@ -874,7 +878,7 @@ ${s.tab==='in' && h`
     return h`<${Dialog} open=${true} title=${r.id + ' · ' + r.vno} onClose=${close} width=${960}>
       <div style=${css('display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) 250px;gap:14px;max-height:430px')}>
         ${['front','back'].map(w => h`<div key=${w} style=${css('border-radius:12px;background:#C9CFCB;aspect-ratio:16/10;overflow:hidden;display:flex;align-items:center;justify-content:center;color:var(--ink-700);font-weight:700')}>
-          ${T.photos && T.photos[w] ? h`<a href=${photo(w)} target="_blank" style=${{width:'100%', height:'100%'}}><img src=${photo(w)} alt=${w} style=${{width:'100%', height:'100%', objectFit:'cover'}} /></a>` : (T.photos ? 'No ' + w + ' photo on this PC' : 'Loading…')}</div>`)}
+          ${T.photos && T.photos[w] ? h`<img src=${photo(w)} alt=${w} title="Click to see it large" onClick=${() => this.setState({photoBig:photo(w)})} style=${{width:'100%', height:'100%', objectFit:'cover', cursor:'zoom-in'}} />` : (T.photos ? 'No ' + w + ' photo on this PC' : 'Loading…')}</div>`)}
         <div style=${css('display:grid;grid-template-columns:auto 1fr;gap:4px 10px;font-size:15px;align-content:start')}>
           ${field('Date', shortDay(r.day) + ' ' + r.time)}
           ${field(r.dir === 'in' ? 'From' : 'Going to', r.where)}
@@ -1259,7 +1263,7 @@ ${this.renderAdmin()}
     const clearLogo = () => api('admin_clear_logo').then(() => this.setState(st => ({boot:{...st.boot, logo:null}}))).catch(er => setA({err:er.message}));
     const save = () => {
       if (A.newPw && A.newPw !== A.newPw2) return setA({err:'The two admin passwords are not the same.', msg:null});
-      api('admin_save', {patch:{site_name:d.site_name, agency_name:d.agency_name, weighbridge:d.weighbridge, cameras:d.cameras, cloud:d.cloud, reports_folder:d.reports_folder, retention:d.retention, live_view:d.live_view},
+      api('admin_save', {patch:{site_name:d.site_name, agency_name:d.agency_name, weighbridge:d.weighbridge, cameras:d.cameras, cloud:d.cloud, reports_folder:d.reports_folder, retention:d.retention, live_view:d.live_view, remote:d.remote},
         operators: ops.map(o => ({name:o.name, pin:o.pin})), adminPassword: A.newPw || null, counters: A.counters, liveViewPassword: A.lvPw || null})
       .then(view => { setA({view, draft:JSON.parse(JSON.stringify(view.settings)), ops:view.settings.operators.map(o => ({name:o.name, pin:'', has:o.has_pin})), counters:{...view.counters}, newPw:'', newPw2:'', lvPw:'', msg:'Saved.', err:null}); api('boot').then(boot => this.setState({boot})); this.refresh(); })
       .catch(e => setA({err:e.message, msg:null}));
@@ -1361,6 +1365,18 @@ ${this.renderAdmin()}
         <span style=${css('font-size:15px;color:var(--ink-900)')}>${A.view.liveView.running ? h`<b style=${{color:GRN}}>On: </b>${A.view.liveView.addresses.map(a => 'http://' + a + ':' + A.view.liveView.port).join('  or  ') || 'http://<this PC>:' + A.view.liveView.port}` : A.view.liveView.error ? h`<b style=${{color:RED}}>${A.view.liveView.error}</b>` : 'Off. Turn on, set a viewer password, then Save settings.'}</span>
       </div>
     </div>
+    <div class="admin-sec">
+      <h4>Remote camera view (from anywhere)</h4>
+      <span style=${css('font-size:13px;color:var(--ink-700)')}>Watch the cameras and weight from another city through your relay (the cloud_api service). This PC only asks the relay if anyone is watching, a few hundred bytes each time. Pictures are sent only while someone watches.</span>
+      <div style=${css('display:grid;grid-template-columns:auto minmax(0,1.6fr) minmax(0,1fr) 150px;gap:12px;align-items:end')}>
+        ${row('Turn on', ['remote','enabled'], 'check')}
+        ${row('Relay address', ['remote','relay_url'], 'text', null, 'https://iswm-api-xxxx.a.run.app')}
+        ${row('Site key (from the relay)', ['remote','site_key'], 'password')}
+        <label class="admin-row">Check every<select value=${String(d.remote.poll_seconds)} onChange=${e => upd(['remote','poll_seconds'], Number(e.target.value))}>${[[10,'10 seconds'],[20,'20 seconds'],[60,'1 minute'],[120,'2 minutes']].map(([v,l]) => h`<option key=${v} value=${String(v)}>${l}</option>`)}</select></label>
+      </div>
+      <span style=${css('font-size:14px;color:var(--ink-900)')}>${(() => { const r = A.view.remote || {}; const st = {off:'Off', waiting:'Ready — nobody watching', sending:'Sending to ' + (r.watching || []).join(' and ') + ' viewer', offline:'Cannot reach the relay: ' + (r.message || ''), error:r.message || 'Error'}[r.state] || r.state; return st + ' · internet used since start: ' + (r.kb || 0) + ' KB'; })()}</span>
+      ${d.remote.relay_url && h`<span style=${css('font-size:13px;color:var(--ink-700)')}>${'Viewer link: ' + d.remote.relay_url.replace(/\/$/, '') + '/live/' + A.view.siteId + '?key=<API key>'}</span>`}
+    </div>
     <div class="admin-grid">
       <div class="admin-sec">
         <h4>Sync to Google Cloud</h4>
@@ -1398,11 +1414,19 @@ ${this.renderAdmin()}
 
   // --- on-screen keyboard, for mouse-only (or touch) use ------------------------------
   // Opens when a text box is clicked with the mouse; closes as soon as a real key is pressed.
+  toggleOskMode() {
+    const on = !this.state.oskMode;
+    try { localStorage.setItem('iswm-osk', on ? '1' : '0'); } catch (e) {}
+    this.setState({oskMode:on, osk:null}, () => { const el = document.activeElement; if (on && el && el.matches && el.matches('input, textarea')) this.oskFocus(el); });
+  }
+  oskButton() {
+    const on = this.state.oskMode;
+    return h`<button onMouseDown=${e => e.preventDefault()} onClick=${() => this.toggleOskMode()} title=${on ? 'On-screen keyboard is on. Click to turn off.' : 'Turn on the on-screen keyboard (for mouse or touch only)'} aria-pressed=${on} style=${css('display:flex;align-items:center;justify-content:center;flex:none;width:38px;height:38px;padding:0;border-radius:50%;border:2px solid ' + (on ? '#0E5230' : 'var(--ink-300)') + ';background:' + (on ? '#0E5230' : '#fff') + ';color:' + (on ? '#fff' : 'var(--ink-900)') + ';cursor:pointer')}><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"></rect><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"></path></svg></button>`;
+  }
   oskFocus(el) {
     if (this.progFocus || !el || !el.matches) return;
     const ok = el.matches('input:not([readonly]):not([disabled]):not([type=checkbox]):not([type=radio]):not([type=file]):not([type=date]):not([type=time]), textarea');
-    if (!ok || el.dataset.oskManual) return;   // boxes with a pick-list offer "Type on screen" instead
-    if (!this.lastPointer || Date.now() - this.lastPointer > 700) return;
+    if (!ok || !this.state.oskMode) return;   // only when the on-screen keyboard is switched on (top bar)
     this.oskOpen(el);
   }
   oskOpen(el) {
@@ -1411,9 +1435,13 @@ ${this.renderAdmin()}
     this.oskEl = el;
     const r = el.getBoundingClientRect(), box = document.querySelector('[data-screen-label="ISWM Plant App"]');
     const b = box ? box.getBoundingClientRect() : {left:0, top:0, width:1366, height:620};
-    const k = b.width / 1366 || 1, num = el.type === 'number' || el.inputMode === 'numeric', w = num ? 330 : 860;
-    const cx = (r.left + r.width / 2 - b.left) / k, cy = (r.top + r.height / 2 - b.top) / k;
-    this.setState({osk: {num, w, top: cy > 310, left: Math.round(Math.min(1366 - w - 8, Math.max(8, cx - w / 2)))}});
+    const k = b.width / 1366 || 1, num = el.type === 'number' || el.inputMode === 'numeric', w = num ? 260 : 720;
+    // sit beside the box (so the box and its pick-list stay visible), bottom edge level with the box
+    const fl = (r.left - b.left) / k, fr = (r.right - b.left) / k, fb = (r.bottom - b.top) / k;
+    const hgt = num ? 270 : 280;
+    let left = fr + 12 + w <= 1358 ? fr + 12 : fl - 12 - w >= 8 ? fl - 12 - w : Math.max(8, Math.min(1366 - w - 8, fl));
+    const top = Math.round(Math.min(620 - hgt - 8, Math.max(72, fb - hgt)));
+    this.setState({osk: {num, w, top, left: Math.round(left)}});
   }
   oskPress(key) {
     const el = this.oskEl;
@@ -1444,25 +1472,28 @@ ${this.renderAdmin()}
   renderOsk() {
     const o = this.state.osk;
     if (!o) return null;
-    const keyBtn = (k, label, w, dark) => h`<button key=${k} data-osk="1" tabIndex=${-1}
-      onMouseDown=${e => { e.preventDefault(); this.oskPress(k); }}
-      style=${css('flex:' + (w || 1) + ' 1 0;min-width:0;height:52px;border-radius:12px;border:2px solid ' + (dark ? '#0E5230' : 'var(--ink-300)') + ';background:' + (dark ? '#0E5230' : '#fff') + ';color:' + (dark ? '#fff' : 'var(--ink-900)') + ';font-size:' + (label.length > 2 ? 16 : 22) + 'px;font-weight:700;cursor:pointer;user-select:none')}>${label}</button>`;
-    const row = (keys) => h`<div style=${css('display:flex;gap:6px')}>${keys}</div>`;
     const sh = this.state.oskShift;
-    const letters = r => r.split('').map(c => keyBtn(c.toUpperCase(), sh ? c.toUpperCase() : c, 1));
+    const keyBtn = (k, label, w, kind) => h`<button key=${k} data-osk="1" tabIndex=${-1}
+      onMouseDown=${e => { e.preventDefault(); this.oskPress(k); }}
+      style=${css('flex:' + (w || 1) + ' 1 0;min-width:0;height:46px;border-radius:10px;border:1px solid ' + (kind === 'ok' ? '#0E5230' : 'var(--ink-200)') + ';background:' + (kind === 'ok' ? '#0E5230' : kind === 'fn' ? 'var(--ink-050)' : '#fff') + ';color:' + (kind === 'ok' ? '#fff' : 'var(--ink-900)') + ';font-size:' + (label.length > 2 ? 15 : 21) + 'px;font-weight:' + (kind ? 700 : 400) + ';cursor:pointer;user-select:none;box-shadow:0 1px 0 var(--ink-200)')}>${label}</button>`;
+    const row = keys => h`<div style=${css('display:flex;gap:5px')}>${keys}</div>`;
+    const letters = r => r.split('').map(c => keyBtn(c.toUpperCase(), sh ? c.toUpperCase() : c));
     const body = o.num ? h`
       ${row(['7','8','9'].map(c => keyBtn(c, c)))}
       ${row(['4','5','6'].map(c => keyBtn(c, c)))}
       ${row(['1','2','3'].map(c => keyBtn(c, c)))}
-      ${row([keyBtn('.', '.'), keyBtn('0', '0'), keyBtn('BS', '⌫')])}
-      ${row([keyBtn('CLR', 'Clear'), keyBtn('HIDE', 'Hide'), keyBtn('ENTER', 'OK', 1, true)])}`
+      ${row([keyBtn('.', '.'), keyBtn('0', '0'), keyBtn('BS', '⌫', 1, 'fn')])}
+      ${row([keyBtn('CLR', 'Clear', 1, 'fn'), keyBtn('ENTER', 'OK', 2, 'ok')])}`
       : h`
       ${row('1234567890'.split('').map(c => keyBtn(c, c)))}
       ${row(letters('qwertyuiop'))}
-      ${row([...letters('asdfghjkl'), keyBtn('BS', '⌫', 1.4)])}
-      ${row([keyBtn('SHIFT', sh ? 'abc' : 'ABC', 1.4, sh), ...letters('zxcvbnm'), keyBtn('-', '-'), keyBtn('.', '.')])}
-      ${row([keyBtn('CLR', 'Clear', 1.5), keyBtn('SPACE', 'Space', 5), keyBtn('HIDE', 'Hide', 1.5), keyBtn('ENTER', 'OK', 1.5, true)])}`;
-    return h`<div data-osk="1" onMouseDown=${e => e.preventDefault()} style=${css('position:absolute;left:' + o.left + 'px;' + (o.top ? 'top:72px;' : 'bottom:10px;') + 'width:' + o.w + 'px;box-sizing:border-box;z-index:200;display:flex;flex-direction:column;gap:6px;padding:10px;border-radius:18px;background:#E8EDEA;border:2px solid var(--ink-300);box-shadow:var(--shadow-lg)')}>${body}</div>`;
+      ${row([...letters('asdfghjkl'), keyBtn('BS', '⌫', 1.3, 'fn')])}
+      ${row([keyBtn('SHIFT', sh ? 'abc' : 'ABC', 1.3, 'fn'), ...letters('zxcvbnm'), keyBtn('-', '-'), keyBtn('.', '.')])}
+      ${row([keyBtn('CLR', 'Clear', 1.4, 'fn'), keyBtn('SPACE', 'Space', 5), keyBtn('ENTER', 'OK', 1.6, 'ok')])}`;
+    return h`<div data-osk="1" onMouseDown=${e => e.preventDefault()} style=${css('position:absolute;left:' + o.left + 'px;top:' + o.top + 'px;width:' + o.w + 'px;box-sizing:border-box;z-index:200;display:flex;flex-direction:column;gap:5px;padding:8px;border-radius:14px;background:rgba(255,255,255,0.97);border:1px solid var(--ink-200);box-shadow:var(--shadow-lg)')}>
+      ${body}
+      <button data-osk="1" tabIndex=${-1} onMouseDown=${e => { e.preventDefault(); this.oskPress('HIDE'); }} title="Hide" style=${css('position:absolute;right:-12px;top:-12px;width:28px;height:28px;border-radius:50%;border:1px solid var(--ink-300);background:#fff;font-size:16px;line-height:1;cursor:pointer')}>×</button>
+    </div>`;
   }
 
   renderHelp() {
@@ -1477,7 +1508,7 @@ ${this.renderAdmin()}
       ['Everything else', 'Tab moves to the next button or box, Shift + Tab goes back, Enter or Space presses.'],
       ['Cameras', 'Alt + V shows or stops the live picture. Cameras also start by themselves when a vehicle is picked.'],
       ['Close / cancel', 'Esc closes lists, boxes and full view'],
-      ['Mouse only', 'Click any typing box and an on-screen keyboard appears.'],
+      ['Mouse only', 'Turn on the on-screen keyboard with the keyboard button at the top. Then clicking a typing box shows it.'],
       ['Admin', 'Ctrl + Shift + A, or tap the site name 5 times'],
     ];
     return h`<${Dialog} open=${true} title="Keyboard keys" onClose=${() => this.setState({help:false})} width=${760}>

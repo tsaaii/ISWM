@@ -86,3 +86,77 @@ def test_entries_and_summary(client):
     assert [r["id"] for r in rows] == ["INR26100001"]
     s = client.get("/v1/sites/iswm-donthali/summary", headers=h).get_json()
     assert s["in"]["Mixed"] == {"trips": 1, "net_kg": 3000} and s["incomplete"] == 1
+
+
+def test_remote_view_end_to_end(tmp_path, monkeypatch):
+    """Plant <-> relay <-> viewer over real HTTP: pictures flow only while someone watches."""
+    import http.server
+    import threading
+    import time
+    import cv2
+    import numpy as np
+    import requests
+    from werkzeug.serving import make_server
+    from iswm.db import DB
+    from iswm.service import Service
+    from iswm.settings import Settings
+
+    monkeypatch.setenv("API_KEYS", "boss:viewkey")
+    monkeypatch.setenv("PLANT_KEYS", "iswm-donthali:plantkey")
+    monkeypatch.setenv("ISWM_DATA_DIR", str(tmp_path))
+    api.LIVE.clear()
+    relay = make_server("127.0.0.1", 0, api.app, threaded=True)
+    threading.Thread(target=relay.serve_forever, daemon=True).start()
+    relay_url = "http://127.0.0.1:%d" % relay.server_port
+
+    jpg = cv2.imencode(".jpg", np.full((720, 1280, 3), 90, np.uint8))[1].tobytes()
+    hits = []
+
+    class Cam(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            hits.append(1)
+            self.send_response(200)
+            self.send_header("Content-Type", "image/jpeg")
+            self.end_headers()
+            self.wfile.write(jpg)
+
+    camsrv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Cam)
+    threading.Thread(target=camsrv.serve_forever, daemon=True).start()
+    s = Settings(str(tmp_path / "s.json"))
+    s.update({"cameras": {"front": {"type": "HTTP", "ip": "127.0.0.1", "port": str(camsrv.server_address[1]),
+                                    "endpoint": "/x.jpg"}, "back": {"type": "None"}},
+              "remote": {"enabled": True, "relay_url": relay_url, "site_key": "plantkey", "poll_seconds": 10}})
+    svc = Service(s, DB(str(tmp_path / "d.sqlite3")), start_devices=False)
+    svc.cams.start()
+    t = threading.Thread(target=svc.remote._loop, daemon=True)
+    t.start()
+    try:
+        time.sleep(2)
+        assert svc.remote.state == "waiting" and hits == []  # nobody watching: camera untouched, nothing sent
+        sent_before = svc.remote.bytes
+        r = requests.get(relay_url + "/v1/sites/iswm-donthali/live/front.mjpg?key=viewkey&q=low", stream=True, timeout=40)
+        buf = b""
+        for chunk in r.iter_content(4096):
+            buf += chunk
+            if buf.count(b"--frame") >= 2:
+                break
+        r.close()
+        assert b"Content-Type: image/jpeg" in buf and svc.remote.bytes > sent_before
+        state = requests.get(relay_url + "/v1/sites/iswm-donthali/live/state", headers={"X-API-Key": "viewkey"}).json()
+        assert state["plant_online"] and state["weight"] is not None
+        assert requests.get(relay_url + "/v1/plant/iswm-donthali/wanted", headers={"X-Site-Key": "bad"}).status_code == 401
+        deadline = time.time() + 30
+        while svc.remote.state == "sending" and time.time() < deadline:
+            time.sleep(0.5)
+        assert svc.remote.state == "waiting"  # viewer left: plant stopped sending
+        b = svc.remote.bytes
+        time.sleep(3)
+        assert svc.remote.bytes == b
+    finally:
+        svc.remote.stop()
+        svc.cams.stop()
+        relay.shutdown()
+        camsrv.shutdown()

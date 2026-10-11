@@ -3,3 +3,5 @@ opencv-python-headless>=4.11
 numpy>=2.2
 google-auth>=2.30
 requests>=2.32
+PySide6-Essentials==6.8.1
+PySide6-Addons==6.8.1

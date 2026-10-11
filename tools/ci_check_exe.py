@@ -42,7 +42,7 @@ for d, _, files in os.walk(root):
 print("marked %d files as downloaded" % marked)
 
 try:
-    code = subprocess.run([exe, "--check"], timeout=120).returncode
+    code = subprocess.run([exe, "--check"], timeout=180).returncode
 except Exception as e:
     fail("--check did not run: %r" % e)
 if code != 0:

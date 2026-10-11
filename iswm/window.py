@@ -1,17 +1,15 @@
 """Open the app window.
 
-The screens open in Microsoft Edge's app mode: a plain window with the site
-name in the title bar, no address bar or tabs. Edge is part of Windows 10
-and 11, so nothing extra is installed, and nothing depends on .NET.
+1. Standalone: a Qt WebEngine window that ships inside ISWM (its own built-in
+   Chromium), so it needs neither Edge nor .NET, and looks like a normal
+   program: plant icon, site name in the title bar, no address bar, no
+   right-click menu, and it cannot be navigated away from the app.
+2. If that cannot start (e.g. a very old graphics driver), Microsoft Edge's
+   app mode is used: a plain window with no address bar.
+3. Last resort: the default browser.
 
-(The first versions used pywebview, which needs .NET through pythonnet. On
-some PCs .NET refused to load it: "Failed to resolve
-Python.Runtime.Loader.Initialize". Edge app mode avoids that whole layer.)
-
-The window uses its own Edge profile in the data folder, so it is separate
-from the person's normal browsing, opens with no sign-in or welcome pages,
-and its process ends when the window is closed, which also stops ISWM.
-If neither Edge nor Chrome is found, the default browser is used.
+(Early versions used pywebview, which needs .NET through pythonnet; on some PCs
+.NET refused to load it: "Failed to resolve Python.Runtime.Loader.Initialize".)
 """
 import ctypes
 import json
@@ -69,9 +67,67 @@ def browser_command(browser, url):
     return [browser, "--app=" + url, "--user-data-dir=" + profile] + EDGE_ARGS
 
 
+def run_qt(url, title, data_dir):
+    """The standalone window. Returns False if Qt WebEngine is not available here."""
+    try:
+        from PySide6.QtCore import Qt, QUrl
+        from PySide6.QtGui import QIcon
+        from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile
+        from PySide6.QtWebEngineWidgets import QWebEngineView
+        from PySide6.QtWidgets import QApplication, QMainWindow
+    except Exception:
+        logging.exception("standalone window not available")
+        return False
+    if "--software" in sys.argv or os.environ.get("ISWM_SOFTWARE_GL"):
+        os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "") + " --disable-gpu"
+    origin = url.split("/index.html")[0]
+
+    class Page(QWebEnginePage):
+        def acceptNavigationRequest(self, target, kind, main_frame):
+            return target.toString().startswith(origin)  # never leave the app
+
+        def createWindow(self, kind):
+            return None  # no pop-up windows
+
+    app = QApplication.instance() or QApplication(sys.argv[:1])
+    profile = QWebEngineProfile("iswm", app)  # keeps the keyboard setting and last operator between starts
+    profile.setPersistentStoragePath(os.path.join(data_dir, "window-storage"))
+    profile.setCachePath(os.path.join(data_dir, "window-cache"))
+    view = QWebEngineView()
+    page = Page(profile, view)
+    view.setPage(page)
+    view.setContextMenuPolicy(Qt.NoContextMenu)
+    win = QMainWindow()
+    win.setWindowTitle(title)
+    icon = os.path.join(paths.web_dir(), "favicon.png")
+    if os.path.exists(icon):
+        win.setWindowIcon(QIcon(icon))
+    win.setCentralWidget(view)
+    win.setMinimumSize(1000, 560)
+    win.resize(1400, 760)
+
+    def fullscreen(req):
+        req.accept()
+        win.showFullScreen() if req.toggleOn() else win.showNormal()
+
+    page.fullScreenRequested.connect(fullscreen)
+    page.titleChanged.connect(lambda t: win.setWindowTitle(t or title))
+    view.setUrl(QUrl(url))
+    win.show()
+    logging.info("standalone window open")
+    app.exec()
+    return True
+
+
 def run(service, url):
     """Show the app. Returns when the window is closed."""
     service.window = None
+    title = service.settings.get("site_name") or "ISWM"
+    try:
+        if run_qt(url, title, paths.data_dir()):
+            return
+    except Exception:
+        logging.exception("standalone window failed; trying Edge")
     browser = find_browser()
     if browser:
         logging.info("opening window with %s", browser)
@@ -87,10 +143,25 @@ def run(service, url):
 
 
 def self_check():
-    """Used by the build: is there a browser to show the window with?"""
-    b = find_browser()
-    logging.info("window check: %s", b or "no Edge or Chrome found")
-    return bool(b)
+    """Used by the build: open the standalone window off-screen and check a page really loads."""
+    if sys.platform != "win32":
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    try:
+        from PySide6.QtCore import QTimer, QUrl
+        from PySide6.QtWebEngineWidgets import QWebEngineView
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance() or QApplication(sys.argv[:1])
+        view = QWebEngineView()
+        result = {}
+        view.loadFinished.connect(lambda ok: (result.__setitem__("ok", ok), app.quit()))
+        QTimer.singleShot(30000, app.quit)
+        view.setHtml("<html><body>ISWM window check</body></html>", QUrl("http://127.0.0.1/"))
+        app.exec()
+        logging.info("window check: page loaded = %s", result.get("ok"))
+        return bool(result.get("ok"))
+    except Exception:
+        logging.exception("window check failed")
+        return False
 
 
 class SingleInstance:

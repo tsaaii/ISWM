@@ -21,6 +21,7 @@ from .settings import (BRANDS, Settings, check_pin, hash_password, hash_pin, pas
                        pin_problem)
 from .liveview import LiveView, lan_addresses
 from .maintenance import Maintenance
+from .remote import RemoteView
 from .weighbridge import Weighbridge, list_ports
 
 ADMIN_TTL_S = 15 * 60
@@ -54,15 +55,18 @@ class Service:
         self._full = False
         self.maint = Maintenance(self)
         self.liveview = LiveView(self)
+        self.remote = RemoteView(self)
         if start_devices:
             self.wb.start()
             self.cams.start()
             self.cloud.start()
             self.maint.start()
             self.liveview.apply()
+            self.remote.start()
 
     def shutdown(self):
         self.liveview.stop()
+        self.remote.stop()
         self.maint.stop()
         self.wb.stop()
         self.cams.stop()
@@ -455,6 +459,7 @@ class Service:
         self._admin()
         lv = self.settings.get("live_view") or {}
         return {"storage": self.maint.storage(), "dbOk": self.db_ok, "settingsRecovered": self.settings.recovered,
+                "remote": self.remote.status(), "siteId": self.cloud.site_id(),
                 "liveView": {"running": self.liveview.running(), "error": self.liveview.error,
                              "addresses": lan_addresses(), "port": lv.get("port"), "hasPassword": bool(lv.get("password_hash"))},
                 "vehicles": [v["vno"] for v in self.db.vehicle_list()],"settings": self.settings.public(), "ports": list_ports(), "brands": BRANDS,
@@ -464,7 +469,7 @@ class Service:
     def admin_save(self, patch, operators=None, adminPassword=None, counters=None, liveViewPassword=None):
         self._admin()
         allowed = {"site_name", "agency_name", "weighbridge", "cameras", "cloud", "reports_folder",
-                   "outward_destinations", "retention", "live_view"}
+                   "outward_destinations", "retention", "live_view", "remote"}
         patch = {k: v for k, v in (patch or {}).items() if k in allowed}
         if "cloud" in patch:
             c = dict(patch["cloud"])
@@ -476,6 +481,16 @@ class Service:
             if c.get("photos") != "off" and not c.get("bucket_name"):
                 raise RuleError("Photo upload needs a Cloud Storage bucket name.")
             patch["cloud"] = c
+        if "remote" in patch:
+            r = dict(patch["remote"])
+            r["enabled"] = bool(r.get("enabled"))
+            r["relay_url"] = (r.get("relay_url") or "").strip()
+            r["poll_seconds"] = min(300, max(10, int(r.get("poll_seconds") or 20)))
+            if r.get("site_key") in (None, "", "••••••"):
+                r.pop("site_key", None)  # keep the saved key
+            if r["enabled"] and not r["relay_url"].startswith("https://"):
+                raise RuleError("Relay address must start with https://")
+            patch["remote"] = r
         if "retention" in patch:
             patch["retention"] = {k: max(0, int(patch["retention"].get(k) or 0))
                                   for k in ("photos_days", "reports_days", "logs_days", "backups_days")}

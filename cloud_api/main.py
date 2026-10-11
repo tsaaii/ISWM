@@ -13,6 +13,9 @@ Endpoints (all JSON):
     GET /v1/sites/<site>/summary?date=YYYY-MM-DD
     GET /v1/sites/<site>/vehicles
     GET /v1/sites/<site>/stream          live: Server-Sent Events, one event per new/changed trip
+
+Remote camera view (relay), see the "Remote camera view" part below:
+    GET /live/<site>?key=<api key>       viewer page: cameras + live weight, from anywhere
 """
 import datetime as dt
 import json
@@ -20,6 +23,8 @@ import os
 import queue
 import re
 import secrets
+import threading
+import time
 
 from flask import Flask, Response, abort, jsonify, request
 
@@ -152,6 +157,157 @@ def stream(site):
     return Response(gen(), mimetype="text/event-stream", headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
 
 
+# --- Remote camera view (relay) -------------------------------------------------------
+# The plant PC is behind the plant's router, so nobody can connect to it from outside.
+# Instead it asks this relay every ~20 seconds "is anyone watching?" (a tiny request).
+# Only while a viewer has the page open does the plant send small JPEG pictures here,
+# and the relay passes them on to the viewer. No viewer = no pictures sent = no data used.
+#
+# State is kept in memory, so deploy this service with --max-instances 1.
+# Plant keys: PLANT_KEYS="iswm-donthali:SECRET1,iswm-kadiri:SECRET2" (one per site).
+
+LIVE = {}
+LIVE_LOCK = threading.Lock()
+VIEW_MINUTES = int(os.environ.get("LIVE_MAX_MINUTES", "10"))  # a viewing session pauses after this, to save data
+QUALITY = {"low": (480, 50, 1.0), "normal": (640, 60, 1.0), "high": (960, 70, 2.0)}  # width, jpeg quality, fps
+
+
+def live(site):
+    with LIVE_LOCK:
+        return LIVE.setdefault(site, {"want": {}, "frames": {}, "weight": None, "seen": 0.0, "q": "normal",
+                                      "cond": threading.Condition(), "bytes": 0})
+
+
+def plant_ok(site):
+    want = dict(p.split(":", 1) for p in filter(None, (os.environ.get("PLANT_KEYS") or "").split(",")))
+    got = request.headers.get("X-Site-Key") or ""
+    if site not in want or not secrets.compare_digest(got, want[site]):
+        abort(401, "Wrong site key.")
+
+
+def wanted(st):
+    now = time.time()
+    return sorted(c for c, until in st["want"].items() if until > now)
+
+
+@app.get("/v1/plant/<site>/wanted")
+def plant_wanted(site):
+    """The plant asks: is anyone watching? Answers in a few bytes."""
+    plant_ok(site)
+    st = live(site)
+    st["seen"] = time.time()
+    w, q, f = QUALITY[st["q"]]
+    return jsonify({"cams": wanted(st), "width": w, "quality": q, "fps": f})
+
+
+@app.post("/v1/plant/<site>/frame/<cam>")
+def plant_frame(site, cam):
+    """The plant sends one picture (only while someone watches). Replies with who is still watching."""
+    plant_ok(site)
+    if cam not in ("front", "back"):
+        abort(404, "No such camera.")
+    data = request.get_data(cache=False)
+    if not data.startswith(b"\xff\xd8") or len(data) > 2_000_000:
+        abort(400, "Send a JPEG.")
+    st = live(site)
+    st["seen"] = time.time()
+    try:
+        st["weight"] = json.loads(request.headers.get("X-Weight") or "null")
+    except ValueError:
+        pass
+    with st["cond"]:
+        st["frames"][cam] = (data, time.time())
+        st["bytes"] += len(data)
+        st["cond"].notify_all()
+    w, q, f = QUALITY[st["q"]]
+    return jsonify({"cams": wanted(st), "width": w, "quality": q, "fps": f})
+
+
+@app.get("/v1/sites/<site>/live/<cam>.mjpg")
+def live_stream(site, cam):
+    """A viewer watches one camera. Watching is what makes the plant send pictures."""
+    check_site(site)
+    if cam not in ("front", "back"):
+        abort(404, "No such camera.")
+    st = live(site)
+    if request.args.get("q") in QUALITY:
+        st["q"] = request.args["q"]
+    end = time.time() + VIEW_MINUTES * 60
+
+    def gen():
+        last = None
+        while time.time() < end:
+            st["want"][cam] = time.time() + 12
+            with st["cond"]:
+                st["cond"].wait(timeout=10)
+                frame = st["frames"].get(cam)
+            if frame and frame is not last and time.time() - frame[1] < 15:
+                last = frame
+                yield b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " + str(len(frame[0])).encode() + \
+                    b"\r\n\r\n" + frame[0] + b"\r\n"
+        st["want"].pop(cam, None)
+
+    return Response(gen(), mimetype="multipart/x-mixed-replace; boundary=frame",
+                    headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
+
+
+@app.get("/v1/sites/<site>/live/state")
+def live_state(site):
+    check_site(site)
+    st = live(site)
+    now = time.time()
+    return jsonify({"plant_online": now - st["seen"] < 60, "weight": st["weight"], "watching": wanted(st),
+                    "frame_age": {c: round(now - f[1], 1) for c, f in st["frames"].items()},
+                    "mb_sent": round(st["bytes"] / 1e6, 1), "max_minutes": VIEW_MINUTES, "quality": st["q"]})
+
+
+@app.get("/live/<site>")
+def live_page(site):
+    check_site(site)
+    return Response(LIVE_PAGE.replace("{{SITE}}", site), mimetype="text/html")
+
+
+LIVE_PAGE = """<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>{{SITE}} · remote view</title>
+<style>
+body{margin:0;background:#F2FBF4;color:#121A14;font-family:"Palatino Linotype",Palatino,Georgia,serif}
+header{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 16px;background:#fff;border-bottom:4px solid #1B8A3A}
+h1{font-size:20px;margin:0}.pill{padding:4px 12px;border-radius:999px;font-weight:700;color:#fff;background:#9AA79F}
+button{font:inherit;font-weight:700;height:38px;padding:0 14px;border-radius:999px;border:2px solid #9AA79F;background:#fff;cursor:pointer}
+button.on{background:#0E5230;border-color:#0E5230;color:#fff}
+main{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px;padding:12px 16px}
+.cam{position:relative;border-radius:14px;overflow:hidden;background:#C9CFCB;aspect-ratio:16/9;display:flex;align-items:center;justify-content:center;color:#33413A;font-weight:700}
+.cam img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000}
+.cam b{position:absolute;left:10px;top:10px;padding:3px 10px;border-radius:999px;background:rgba(18,26,20,.6);color:#fff;font-size:13px;z-index:1}
+#w{font-size:28px;font-variant-numeric:tabular-nums}.muted{color:#33413A;font-size:14px}
+</style></head><body>
+<header><h1>{{SITE}}</h1><span id="plant" class="pill">…</span><span><span id="w">—</span> kg</span>
+<span style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap">
+<button data-cams="front" class="on">Front</button><button data-cams="back">Back</button><button data-cams="front,back">Both</button>
+<button data-q="low">Low data</button><button data-q="normal" class="on">Normal</button><button data-q="high">Sharper</button>
+<button id="stop">Stop</button></span></header>
+<main id="cams"></main>
+<p class="muted" style="padding:0 16px" id="info">Pictures are sent only while this page is open, and pause after a few minutes to save data.</p>
+<script>
+var key=new URLSearchParams(location.search).get('key')||'', site='{{SITE}}', cams=['front'], q='normal', on=true;
+function api(p){return fetch('/v1/sites/'+site+p,{headers:{'X-API-Key':key}}).then(function(r){return r.json()})}
+function draw(){var m=document.getElementById('cams');m.innerHTML='';if(!on){m.innerHTML='<div class="cam">Stopped. Choose a camera to watch again.</div>';return}
+ cams.forEach(function(c){var d=document.createElement('div');d.className='cam';d.innerHTML='<b>'+(c==='front'?'Front':'Back')+' camera</b><span>Waiting for the plant… (up to 20 s)</span>';
+ var i=new Image();i.onload=function(){var sp=d.querySelector('span');if(sp)sp.remove()};
+ i.onerror=function(){setTimeout(draw,5000)};i.src='/v1/sites/'+site+'/live/'+c+'.mjpg?key='+encodeURIComponent(key)+'&q='+q+'&t='+Date.now();d.appendChild(i);m.appendChild(d)})}
+document.querySelectorAll('[data-cams]').forEach(function(b){b.onclick=function(){cams=b.dataset.cams.split(',');on=true;
+ document.querySelectorAll('[data-cams]').forEach(function(x){x.className=x===b?'on':''});draw()}});
+document.querySelectorAll('[data-q]').forEach(function(b){b.onclick=function(){q=b.dataset.q;
+ document.querySelectorAll('[data-q]').forEach(function(x){x.className=x===b?'on':''});draw()}});
+document.getElementById('stop').onclick=function(){on=false;draw()};
+function tick(){api('/live/state').then(function(s){var p=document.getElementById('plant');p.textContent=s.plant_online?'Plant online':'Plant offline';
+ p.style.background=s.plant_online?'#1B8A3A':'#C62828';var w=s.weight;document.getElementById('w').textContent=w&&w.connected?Math.round(w.weight).toLocaleString('en-IN'):'—';
+ document.getElementById('info').textContent='Pictures are sent only while this page is open. Each view pauses after '+s.max_minutes+' minutes. Sent through the relay since it started: '+s.mb_sent+' MB.'}).catch(function(){})}
+draw();tick();setInterval(tick,3000);
+</script></body></html>"""
+
+
+@app.errorhandler(400)
 @app.errorhandler(401)
 @app.errorhandler(404)
 def err(e):
