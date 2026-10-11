@@ -13,7 +13,7 @@ A Windows desktop app for the ISWM Donthali weighbridge. It's built from the Cla
 
 1. Open the repository on GitHub → **Actions** → the latest green **Build Windows installer** run → download **ISWM-Setup** under *Artifacts*. For a tagged version, use **Releases** instead.
 2. Unzip it and double-click **ISWM-Setup.exe**. If Windows says "Windows protected your PC", click **More info → Run anyway**. The installer is not code-signed yet.
-3. Click **Next** until it finishes. It puts an **ISWM Plant** icon on the desktop and in the Start menu, and installs Microsoft Edge WebView2 if the PC doesn't have it.
+3. Click **Next** until it finishes. It puts an **ISWM Plant** icon on the desktop and in the Start menu.
 4. The app opens on **Set up the plant**. Type the site name, make an **admin password**, and add the first operator with a 4-number PIN. Write the admin password down.
 
 Data (records, photos, settings, logo) is kept in `C:\ProgramData\ISWM`. Back up that folder. Uninstalling the app does not delete it, and installing a newer `ISWM-Setup.exe` over the old one keeps everything.
@@ -115,11 +115,11 @@ The installer allows this through the Windows firewall on **private** networks o
 
 **Full quality for a big screen or many viewers.** The built-in page sends ISWM's light preview. For full-resolution video on a control-room screen, let the cameras or NVR serve it directly: open the RTSP main stream in VLC, use the NVR's own app (Hik-Connect, DMSS), or run [MediaMTX](https://github.com/bluenviron/mediamtx) or [go2rtc](https://github.com/AlexxIT/go2rtc), which re-stream RTSP to browsers over WebRTC with low delay.
 
-## If ISWM does not open
+## The app window
 
-- **"Failed to resolve Python.Runtime.Loader.Initialize"**: Windows marked the files as downloaded from the internet, so .NET would not load them. This happens with the portable zip. From version 1.3.1 the app removes that mark from its own files and starts normally. For older copies, right-click the zip → **Properties** → tick **Unblock** → OK before unzipping, or use **ISWM-Setup.exe**.
-- If the app window still cannot open, ISWM opens the same screens in a Microsoft Edge app window (no address bar), and logs the reason in `logs\iswm.log`.
-- `ISWM.exe --check` tests the window parts and writes *window check ok* or the error to the log.
+ISWM shows its screens in a Microsoft Edge **app window**: the site name in the title bar, no address bar or tabs. Edge is part of Windows 10 and 11, so nothing extra is needed. The window uses its own Edge profile in the data folder, so it's kept apart from normal browsing. Closing the window stops ISWM, and starting ISWM a second time just says it's already open.
+
+Earlier versions used a .NET window (pywebview). On some PCs that failed with *"Failed to resolve Python.Runtime.Loader.Initialize"*. From 1.3.1 nothing depends on .NET. If neither Edge nor Chrome is found, ISWM opens in the default browser and shows a small box to keep open while working. `ISWM.exe --check` writes which browser it will use to `logs\iswm.log`.
 
 ## Admin (hidden from operators)
 
@@ -193,7 +193,7 @@ python -m pip install -r requirements.txt pyinstaller
 python -m PyInstaller --noconfirm ISWM.spec
 ```
 
-For the installer as well, install [Inno Setup 6](https://jrsoftware.org/isdl.php), download the [WebView2 bootstrapper](https://go.microsoft.com/fwlink/p/?LinkId=2124703) to `installer\MicrosoftEdgeWebview2Setup.exe`, then run `"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\ISWM.iss`. The result is `dist\ISWM-Setup.exe`.
+For the installer as well, install [Inno Setup 6](https://jrsoftware.org/isdl.php), then run `"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\ISWM.iss`. The result is `dist\ISWM-Setup.exe`.
 
 ## Run from source
 
@@ -216,7 +216,8 @@ python -m pytest -q tests
 | `cloud_api/` | Shared read-only real-time API for Cloud Run, plus Firestore rules |
 | `iswm/service.py` | One method per UI action |
 | `iswm/server.py` | Local HTTP server on 127.0.0.1 with a per-launch token, camera MJPEG streams |
-| `iswm/main.py` | Starts everything and opens the pywebview window |
+| `iswm/main.py` | Starts everything and opens the window |
+| `iswm/window.py` | The Edge app window, and one-ISWM-per-PC |
 | `installer/ISWM.iss` | Inno Setup script for `ISWM-Setup.exe` |
 | `iswm/maintenance.py` | Daily database backup and clean-up of old photos, reports and logs |
 | `iswm/liveview.py` | Password-protected live page for other computers (cameras, weight, today's trips) |

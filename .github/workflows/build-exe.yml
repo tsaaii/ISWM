@@ -27,14 +27,13 @@ jobs:
       - name: Build exe
         run: python -m PyInstaller --noconfirm ISWM.spec
 
-      - name: Check the built exe starts (with a downloaded-file mark, like a real PC)
+      - name: Check the built exe starts
         shell: pwsh
         run: |
-          $dll = Get-ChildItem -Recurse dist/ISWM -Filter Python.Runtime.dll | Select-Object -First 1
-          Set-Content -Path ($dll.FullName + ":Zone.Identifier") -Value "[ZoneTransfer]`r`nZoneId=3"
+          Get-ChildItem -Recurse dist/ISWM -File | ForEach-Object { Set-Content -Path ($_.FullName + ":Zone.Identifier") -Value "[ZoneTransfer]`r`nZoneId=3" }
           $c = Start-Process dist/ISWM/ISWM.exe -ArgumentList "--check" -Wait -PassThru
           Get-Content dist/ISWM/ISWM_data/logs/iswm.log
-          if ($c.ExitCode -ne 0) { throw "window parts did not load" }
+          if ($c.ExitCode -ne 0) { throw "no browser for the window" }
           $p = Start-Process dist/ISWM/ISWM.exe -ArgumentList "--browser" -PassThru
           Start-Sleep 15
           $ok = Select-String -Path dist/ISWM/ISWM_data/logs/iswm.log -Pattern "serving"
@@ -47,7 +46,6 @@ jobs:
         shell: pwsh
         run: |
           choco install innosetup -y --no-progress
-          Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/p/?LinkId=2124703" -OutFile installer/MicrosoftEdgeWebview2Setup.exe
           $version = python -c "import iswm; print(iswm.__version__)"
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$version" installer\ISWM.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
