@@ -39,7 +39,12 @@ jobs:
             if (Test-Path $cl) { Get-Content $cl | Select-Object -Last 15 | ForEach-Object { Write-Output "::error::CONSOLE $_" } }
             exit 1
           }
-          Get-ChildItem -Recurse dist/ISWM -File | ForEach-Object { Set-Content -Path ($_.FullName + ":Zone.Identifier") -Value "[ZoneTransfer]`r`nZoneId=3" }
+          # mark every file as downloaded from the internet, like a zip unpacked on a real PC
+          $marked = 0
+          Get-ChildItem -Recurse dist/ISWM -File | ForEach-Object {
+            try { Set-Content -LiteralPath $_.FullName -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3" -ErrorAction Stop; $marked++ } catch { }
+          }
+          Write-Output "marked $marked files"
           $c = Start-Process dist/ISWM/ISWM.exe -ArgumentList "--check" -Wait -PassThru
           if ($c.ExitCode -ne 0) { Show-Log "check failed with exit code $($c.ExitCode)" }
           $p = Start-Process dist/ISWM/ISWM.exe -ArgumentList "--browser" -PassThru
