@@ -29,12 +29,15 @@ def main(argv=None):
     ap.add_argument("--browser", action="store_true", help="run without a window; open the printed URL")
     ap.add_argument("--port", type=int, default=0)
     ap.add_argument("--version", action="store_true", help="show the version and exit")
+    ap.add_argument("--software", action="store_true", help="draw the window without the graphics card (old drivers)")
     ap.add_argument("--check", action="store_true", help="check a browser is available for the window, log the result, exit")
     args = ap.parse_args(argv)
+    if args.software:
+        os.environ["ISWM_SOFTWARE_GL"] = "1"
     if args.version:
         from . import __version__
         from .window import message
-        message("ISWM version " + __version__ + "\nWindow: Edge app mode (no .NET)")
+        message("ISWM version " + __version__ + "\nWindow: built-in (Qt WebEngine), Edge as fallback")
         return
     _log_setup()
     from . import __version__

@@ -69,6 +69,8 @@ DEFAULTS = {
     "retention": {"photos_days": 90, "reports_days": 180, "logs_days": 60, "backups_days": 30},
     # Read-only live page for other computers on the network (cameras, weight, today's trips).
     "live_view": {"enabled": False, "port": 8090, "password_hash": ""},
+    # Remote camera view through the cloud relay (cloud_api). Off unless the admin turns it on.
+    "remote": {"enabled": False, "relay_url": "", "site_key": "", "poll_seconds": 20},
     "outward_destinations": ["Ultratech cement", "Sri Sai traders", "Farmer buyer", "Landfill cell 2"],
 }
 
@@ -309,5 +311,7 @@ class Settings:
         d = copy.deepcopy(self.data)
         d.pop("admin_password_hash", None)
         d.get("live_view", {}).pop("password_hash", None)
+        if d.get("remote", {}).get("site_key"):
+            d["remote"]["site_key"] = "••••••"  # never sent back to the screen
         d["operators"] = [{"name": o["name"], "has_pin": bool(o.get("pin_hash"))} for o in d.get("operators", [])]
         return d

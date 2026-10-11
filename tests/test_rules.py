@@ -389,6 +389,7 @@ def test_window_opens_in_browser_app_mode_and_single_instance(tmp_path, monkeypa
     assert cmd[1] == "--app=http://127.0.0.1:5/index.html#t=x" and cmd[2].startswith("--user-data-dir=")
     # no browser at all: the default browser opens and the person is told, nothing crashes
     opened, shown = [], []
+    monkeypatch.setattr(window, "run_qt", lambda url, title, d: False)  # standalone window unavailable
     monkeypatch.setattr(window, "find_browser", lambda: None)
     monkeypatch.setattr(window.webbrowser, "open", lambda u: opened.append(u))
     monkeypatch.setattr(window, "message", lambda text, title="ISWM": shown.append(text))

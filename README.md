@@ -103,6 +103,34 @@ Operators can't change a saved trip. They press **Ask to correct (52)** on scree
 
 Every change keeps the old value. Click a trip to see its photos and its "Changed by admin" history. Fixed trips are marked *fixed* and re-sent to the cloud.
 
+## Remote camera view (from anywhere)
+
+See the cameras and the live weight from another city, with nothing opened on the plant's router, and very little internet:
+
+```
+ viewer's browser  ──►  relay (cloud_api on Cloud Run)  ◄──  plant PC asks "anyone watching?"
+                          ▲                                   every 20 s (a few hundred bytes)
+                          └──────── small JPEGs, only while someone is watching ────────┘
+```
+
+1. Deploy `cloud_api` (below) with a key for each site and keys for viewers:
+   ```bash
+   gcloud run deploy iswm-api --source cloud_api --region asia-south1 --allow-unauthenticated \
+     --max-instances 1 --timeout 3600 \
+     --set-env-vars "API_KEYS=owner:VIEWER-KEY,PLANT_KEYS=iswm-donthali:SITE-KEY,LIVE_MAX_MINUTES=10"
+   ```
+   `--max-instances 1` is needed because the relay passes pictures through memory.
+2. In ISWM admin → *Remote camera view*: tick **Turn on**, paste the relay address (`https://iswm-api-….run.app`) and the site key, then save.
+3. Open `https://iswm-api-….run.app/live/iswm-donthali?key=VIEWER-KEY` on any computer or phone. Choose Front, Back or Both, and Low data, Normal or Sharper.
+
+| | Internet used at the plant |
+|---|---|
+| Nobody watching | about 1–2 MB a day (the "anyone watching?" question every 20 s; 1 minute gives about 0.5 MB a day) |
+| Watching one camera, Normal (640 px, 1 picture a second) | about 0.1–0.2 GB an hour |
+| Low data (480 px) | about half of that |
+
+A view pauses after 10 minutes (`LIVE_MAX_MINUTES`), so a forgotten browser tab can't use data all day. Cost: Cloud Run only runs while requests are open, so it's normally inside the free tier. The plant's cameras run only while someone is watching.
+
 ## Live cameras on another computer
 
 **Built-in (easiest, same network).** In admin, under *Live view for other computers*, tick **Turn on**, set a viewer password and save. Admin then shows the address, for example `http://192.168.1.20:8090`. Open it in any browser on another PC or phone on the same network, with user `viewer` and the password you set. The page shows both cameras, the live weight and today's trips.
@@ -111,15 +139,23 @@ ISWM is the relay, so the cameras are opened only once, by the plant PC, no matt
 
 The installer allows this through the Windows firewall on **private** networks only. If the PC's network is set to *Public*, change it to *Private* in Windows network settings.
 
-**From outside the plant (internet).** Don't open a port on the router. Install [Tailscale](https://tailscale.com) (free) on the plant PC and on the viewing PC or phone, and sign in to both with the same account. Then use the plant PC's Tailscale address, for example `http://100.x.y.z:8090`, from anywhere. The connection is encrypted and needs no router changes.
+**From outside the plant (internet).** Use *Remote camera view* above. Or, with no cloud set-up at all: don't open a port on the router. Install [Tailscale](https://tailscale.com) (free) on the plant PC and on the viewing PC or phone, and sign in to both with the same account. Then use the plant PC's Tailscale address, for example `http://100.x.y.z:8090`, from anywhere. The connection is encrypted and needs no router changes.
 
 **Full quality for a big screen or many viewers.** The built-in page sends ISWM's light preview. For full-resolution video on a control-room screen, let the cameras or NVR serve it directly: open the RTSP main stream in VLC, use the NVR's own app (Hik-Connect, DMSS), or run [MediaMTX](https://github.com/bluenviron/mediamtx) or [go2rtc](https://github.com/AlexxIT/go2rtc), which re-stream RTSP to browsers over WebRTC with low delay.
 
 ## The app window
 
-ISWM shows its screens in a Microsoft Edge **app window**: the site name in the title bar, no address bar or tabs. Edge is part of Windows 10 and 11, so nothing extra is needed. The window uses its own Edge profile in the data folder, so it's kept apart from normal browsing. Closing the window stops ISWM, and starting ISWM a second time just says it's already open.
+ISWM is a normal standalone program. Its window has its own built-in browser engine (Qt WebEngine, part of the download), so it needs neither Edge nor .NET. It shows the plant icon and site name, with no address bar and no right-click menu, and it can't be navigated away from the app. Closing it stops ISWM, and starting ISWM a second time just says it's already open. The version is at the bottom-left of the sign-in screen (`ISWM.exe --version`).
 
-Earlier versions used a .NET window (pywebview). On some PCs that failed with *"Failed to resolve Python.Runtime.Loader.Initialize"*. From 1.3.2 nothing depends on .NET. The version is shown at the bottom-left of the sign-in screen, and `ISWM.exe --version` shows it too. If neither Edge nor Chrome is found, ISWM opens in the default browser and shows a small box to keep open while working. `ISWM.exe --check` writes which browser it will use to `logs\iswm.log`.
+If the built-in window can't start, for example with a very old graphics driver, ISWM uses a Microsoft Edge app window, and then the default browser. `ISWM.exe --software` starts the built-in window without the graphics card. `ISWM.exe --check` writes the result of a window test to `logs\iswm.log`.
+
+**Weighbridge and the window.** The COM port is read by ISWM's own background reader, not by the window. The window only shows the reading, about 5 times a second, over the PC's internal connection, so it adds no lag and can't drop readings. What can cause trouble is the same as with any weighbridge program:
+- another program holding the COM port (only one program can open it);
+- a USB-to-serial adapter going to sleep (turn off *USB selective suspend* in Windows power options);
+- the COM number changing when the adapter is moved to another USB socket;
+- a wrong baud rate or regex.
+
+Admin → Weighbridge shows the live reading and the last error.
 
 ## Admin (hidden from operators)
 
@@ -141,11 +177,11 @@ Everything works with just a keyboard or just a mouse. Press **F1** in the app t
 |---|---|---|
 | Sign in | ← → pick your name (the last person is already picked); type the PIN on the number row or number pad. Backspace undoes, Delete clears. | Tap your name, tap the PIN keys |
 | Change screen | Alt + 1 … 6 | Tap the tabs |
-| Vehicle | Just start typing. ↑ ↓ choose, Enter picks | Tap the box and pick from the list, or tap **Type on screen** for a new number |
+| Vehicle | Just start typing. ↑ ↓ choose, Enter picks | Tap the box and pick from the list; for a new number, turn on the keyboard button |
 | Save | Enter again in the vehicle box once the weight is steady, or Ctrl + S | Tap Save |
 | Inward From / Waste | Alt + R / C, Alt + M / W / D | Tap |
 | Outward | Enter moves Vehicle → Material → Going to; type a material's first letter; Alt + K small scale | Tap |
-| Other boxes and buttons | Tab / Shift + Tab, Enter or Space | Tapping a typing box opens an on-screen keyboard (a number pad for weights) |
+| Other boxes and buttons | Tab / Shift + Tab, Enter or Space | Turn on the **keyboard button** in the top bar; then tapping a typing box shows an on-screen keyboard beside it (a number pad for weights) |
 | Close | Esc | × or Cancel |
 | Admin | Ctrl + Shift + A | Tap the site name 5 times |
 
@@ -217,7 +253,8 @@ python -m pytest -q tests
 | `iswm/service.py` | One method per UI action |
 | `iswm/server.py` | Local HTTP server on 127.0.0.1 with a per-launch token, camera MJPEG streams |
 | `iswm/main.py` | Starts everything and opens the window |
-| `iswm/window.py` | The Edge app window, and one-ISWM-per-PC |
+| `iswm/window.py` | The standalone window (Qt WebEngine), Edge fallback, one-ISWM-per-PC |
+| `iswm/remote.py` | Remote camera view: asks the relay if anyone watches, sends pictures only then |
 | `installer/ISWM.iss` | Inno Setup script for `ISWM-Setup.exe` |
 | `iswm/maintenance.py` | Daily database backup and clean-up of old photos, reports and logs |
 | `iswm/liveview.py` | Password-protected live page for other computers (cameras, weight, today's trips) |
