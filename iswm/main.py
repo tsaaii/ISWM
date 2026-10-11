@@ -37,7 +37,7 @@ def main(argv=None):
     if args.version:
         from . import __version__
         from .window import message
-        message("ISWM version " + __version__ + "\nWindow: Edge app mode (no .NET)")
+        message("ISWM version " + __version__ + "\nWindow: built-in (Qt WebEngine), Edge as fallback")
         return
     _log_setup()
     from . import __version__
