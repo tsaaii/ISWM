@@ -4,3 +4,5 @@ dist/
 __pycache__/
 *.pyc
 .pytest_cache/
+.venv/
+installer/MicrosoftEdgeWebview2Setup.exe

@@ -1,4 +1,4 @@
-name: Build Windows exe
+name: Build Windows installer
 
 on:
   push:
@@ -19,25 +19,38 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt pyinstaller==6.13.0 pytest==8.3.5
+          pip install -r requirements.txt pyinstaller pytest
 
       - name: Test
         run: python -m pytest -q tests
 
-      - name: Build
-        run: pyinstaller --noconfirm ISWM.spec
+      - name: Build exe
+        run: python -m PyInstaller --noconfirm ISWM.spec
 
-      - name: Zip
+      - name: Build installer
         shell: pwsh
-        run: Compress-Archive -Path dist/ISWM -DestinationPath ISWM-windows.zip
+        run: |
+          choco install innosetup -y --no-progress
+          Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/p/?LinkId=2124703" -OutFile installer/MicrosoftEdgeWebview2Setup.exe
+          $version = python -c "import iswm; print(iswm.__version__)"
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$version" installer\ISWM.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Compress-Archive -Path dist/ISWM -DestinationPath dist/ISWM-portable.zip
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ISWM-windows
-          path: ISWM-windows.zip
+          name: ISWM-Setup
+          path: dist/ISWM-Setup.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ISWM-portable
+          path: dist/ISWM-portable.zip
 
       - name: Release (tags only)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: ISWM-windows.zip
+          files: |
+            dist/ISWM-Setup.exe
+            dist/ISWM-portable.zip

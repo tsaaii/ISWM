@@ -1,0 +1,1 @@
+Installed with ISWM-Setup.exe. Data is kept in C:\ProgramData\ISWM.

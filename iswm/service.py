@@ -3,6 +3,8 @@
 Methods take and return plain JSON-able values. ``RuleError`` messages are
 shown to the operator as-is, so they are written in the app's plain voice.
 """
+import base64
+import binascii
 import csv
 import datetime as dt
 import os
@@ -15,7 +17,8 @@ from . import __version__, paths
 from .cameras import Cameras
 from .cloud import CloudSync
 from .db import DB, MATERIALS, RECYC, IN_TYPES, RuleError, norm_vno, yymm
-from .settings import Settings, hash_pin
+from .settings import (BRANDS, Settings, check_pin, hash_password, hash_pin, password_problem,
+                       pin_problem)
 from .weighbridge import Weighbridge, list_ports
 
 ADMIN_TTL_S = 15 * 60
@@ -43,6 +46,7 @@ class Service:
         self.cloud = CloudSync(self.db, self.settings)
         self.operator = None
         self._admin_until = 0.0
+        self._fails = {}
         self.window = None  # set by main.py when running in a pywebview window
         self._full = False
         if start_devices:
@@ -58,12 +62,26 @@ class Service:
     # sign-in -------------------------------------------------------------
     def boot(self):
         return {"site": self.settings.get("site_name"), "agency": self.settings.get("agency_name"),
-                "operators": self.settings.operator_names(), "defaultPins": self.settings.using_default_pins(),
+                "operators": self.settings.operator_names(), "needsSetup": not self.settings.get("admin_password_hash"),
+                "logo": self.logo_version(), "admin": self.admin_active(),
                 "version": __version__, "operator": self.operator, "inWindow": self.window is not None}
 
+    def _throttle(self, key):
+        n, until = self._fails.get(key, (0, 0.0))
+        if time.monotonic() < until:
+            raise RuleError("Too many wrong tries. Wait %d seconds." % int(until - time.monotonic() + 1))
+
+    def _failed(self, key):
+        n, _ = self._fails.get(key, (0, 0.0))
+        n += 1
+        self._fails[key] = (n, time.monotonic() + (60 if n >= 5 else 0))
+
     def login(self, name, pin):
+        self._throttle("op:" + str(name))
         if not self.settings.check_operator(name, pin):
+            self._failed("op:" + str(name))
             raise RuleError("Wrong PIN. Try again.")
+        self._fails.pop("op:" + str(name), None)
         self.operator = name
         return {"operator": name}
 
@@ -79,7 +97,7 @@ class Service:
     # live ------------------------------------------------------------------
     def live(self):
         queued = len(self.db.queue_waiting())
-        return {"wb": self.wb.live(), "simulate": bool(self.settings.get("weighbridge").get("simulate")),
+        return {"admin": self.admin_active(), "wb": self.wb.live(), "simulate": bool(self.settings.get("weighbridge").get("simulate")),
                 "minKg": float(self.settings.get("weighbridge").get("min_weight_kg") or 10),
                 "sync": {"state": self.cloud.state, "queued": queued, "message": self.cloud.message},
                 "cams": self.cams.status()}
@@ -263,11 +281,15 @@ class Service:
         return {"path": path, "detail": detail, "folder": os.path.dirname(path)}
 
     def open_folder(self, path=None):
-        path = path or self.reports_folder()
+        """Open the reports folder (or a folder inside it) in Explorer."""
+        base = os.path.realpath(self.reports_folder())
+        target = os.path.realpath(path) if path else base
+        if target != base and not target.startswith(base + os.sep):
+            target = base
         if sys.platform == "win32":
-            os.startfile(path)  # noqa: only exists on Windows
+            os.startfile(target)  # noqa: only exists on Windows
         else:
-            subprocess.Popen(["xdg-open", path])
+            subprocess.Popen(["xdg-open", target])
         return {}
 
     # window --------------------------------------------------------------------
@@ -277,47 +299,128 @@ class Service:
             self._full = bool(on)
         return {"full": self._full}
 
-    # admin -----------------------------------------------------------------------
-    def admin_login(self, pin):
-        if not self.settings.check_admin(pin):
-            raise RuleError("Wrong admin PIN.")
+    # first-run setup -------------------------------------------------------------
+    def setup(self, site, agency, adminPassword, operatorName, operatorPin):
+        """Only before an admin password exists. Creates the admin password and first operator."""
+        if self.settings.get("admin_password_hash"):
+            raise RuleError("This computer is already set up.")
+        site, agency, name = (site or "").strip(), (agency or "").strip(), (operatorName or "").strip()
+        if not site or not name:
+            raise RuleError("Type the site name and the first operator's name.")
+        problem = pin_problem(operatorPin) or password_problem(adminPassword, [str(operatorPin)])
+        if problem:
+            raise RuleError(problem)
+        self.settings.update({"site_name": site, "agency_name": agency,
+                              "admin_password_hash": hash_password(adminPassword)})
+        self.settings.replace("operators", [{"name": name, "pin_hash": hash_pin(operatorPin)}])
+        return self.boot()
+
+    # branding ----------------------------------------------------------------------
+    LOGO_TYPES = {b"\x89PNG": "png", b"\xff\xd8\xff": "jpg", b"RIFF": "webp"}
+
+    def logo_path(self):
+        folder = paths.sub("branding")
+        for ext in ("png", "jpg", "webp"):
+            p = os.path.join(folder, "logo." + ext)
+            if os.path.exists(p):
+                return p
+        return None
+
+    def logo_version(self):
+        p = self.logo_path()
+        return int(os.path.getmtime(p)) if p else None
+
+    def admin_set_logo(self, dataUrl):
+        self._admin()
+        try:
+            raw = base64.b64decode((dataUrl or "").split(",", 1)[-1], validate=True)
+        except (ValueError, binascii.Error):
+            raise RuleError("That file is not a picture.")
+        ext = next((e for magic, e in self.LOGO_TYPES.items() if raw.startswith(magic)), None)
+        if ext is None or (ext == "webp" and raw[8:12] != b"WEBP"):
+            raise RuleError("Use a PNG, JPG or WebP picture.")
+        if len(raw) > 2 * 1024 * 1024:
+            raise RuleError("Logo must be smaller than 2 MB.")
+        self.admin_clear_logo()
+        with open(os.path.join(paths.sub("branding"), "logo." + ext), "wb") as f:
+            f.write(raw)
+        return {"logo": self.logo_version()}
+
+    def admin_clear_logo(self):
+        self._admin()
+        p = self.logo_path()
+        while p:
+            os.remove(p)
+            p = self.logo_path()
+        return {"logo": None}
+
+    # admin -------------------------------------------------------------------------
+    def admin_active(self):
+        return time.monotonic() <= self._admin_until
+
+    def admin_login(self, password):
+        self._throttle("admin")
+        if not self.settings.check_admin(password):
+            self._failed("admin")
+            raise RuleError("Wrong admin password.")
+        self._fails.pop("admin", None)
         self._admin_until = time.monotonic() + ADMIN_TTL_S
         return self.admin_view()
 
+    def admin_lock(self):
+        self._admin_until = 0.0
+        return {}
+
     def _admin(self):
-        if time.monotonic() > self._admin_until:
-            raise RuleError("Admin sign-in timed out. Type the admin PIN again.")
+        if not self.admin_active():
+            raise RuleError("Admin is locked. Open admin again with the admin password.")
         self._admin_until = time.monotonic() + ADMIN_TTL_S
 
     def admin_view(self):
         self._admin()
-        return {"settings": self.settings.public(), "ports": list_ports(),
+        return {"settings": self.settings.public(), "ports": list_ports(), "brands": BRANDS,
                 "counters": {"in": self.db.counter("in"), "out": self.db.counter("out")},
-                "dataFolder": paths.data_dir(), "live": self.live()}
+                "dataFolder": paths.data_dir(), "live": self.live(), "logo": self.logo_version()}
 
-    def admin_save(self, patch, operators=None, adminPin=None, counters=None):
+    def admin_save(self, patch, operators=None, adminPassword=None, counters=None):
         self._admin()
         allowed = {"site_name", "agency_name", "weighbridge", "cameras", "cloud", "reports_folder",
                    "outward_destinations"}
         patch = {k: v for k, v in (patch or {}).items() if k in allowed}
-        if adminPin:
-            if not (str(adminPin).isdigit() and len(str(adminPin)) == 4):
-                raise RuleError("Admin PIN must be 4 numbers.")
-            patch["admin_pin_hash"] = hash_pin(adminPin)
+        if adminPassword:
+            problem = password_problem(adminPassword)
+            if not problem and self.settings.operator_pin_matches(adminPassword):
+                problem = "Admin password must not contain an operator's PIN."
+            if problem:
+                raise RuleError(problem)
+            patch["admin_password_hash"] = hash_password(adminPassword)
         if operators is not None:
             old = {o["name"]: o.get("pin_hash", "") for o in self.settings.data.get("operators", [])}
-            ops = []
+            ops, names = [], set()
             for o in operators:
                 name = (o.get("name") or "").strip()
                 if not name:
                     continue
+                if name in names:
+                    raise RuleError("Two operators are called %s. Names must be different." % name)
+                names.add(name)
                 pin = (o.get("pin") or "").strip()
-                if pin and not (pin.isdigit() and len(pin) == 4):
-                    raise RuleError("PIN for %s must be 4 numbers." % name)
-                ops.append({"name": name, "pin_hash": hash_pin(pin) if pin else old.get(name, "")})
+                if pin:
+                    problem = pin_problem(pin)
+                    if problem:
+                        raise RuleError("%s: %s" % (name, problem))
+                elif not old.get(name):
+                    raise RuleError("Give %s a 4-number PIN." % name)
+                ops.append({"name": name, "pin_hash": hash_pin(pin) if pin else old[name], "pin": pin})
             if not ops:
                 raise RuleError("Keep at least one operator.")
-            self.settings.replace("operators", ops)
+            for i, a in enumerate(ops):  # every operator needs their own PIN
+                for b in ops[i + 1:]:
+                    pa, pb = a["pin"], b["pin"]
+                    if (pa and check_pin(pa, b["pin_hash"])) or (pb and check_pin(pb, a["pin_hash"])):
+                        raise RuleError("%s and %s have the same PIN. Each operator needs their own."
+                                        % (a["name"], b["name"]))
+            self.settings.replace("operators", [{"name": o["name"], "pin_hash": o["pin_hash"]} for o in ops])
         for name, value in (counters or {}).items():
             if name in ("in", "out") and value not in (None, ""):
                 if int(value) != self.db.counter(name):
@@ -331,4 +434,3 @@ class Service:
         if "cloud" in patch:
             self.cloud.kick()
         return self.admin_view()
-

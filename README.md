@@ -1,39 +1,60 @@
 # ISWM Plant App
 
-A Windows desktop app for the ISWM Donthali weighbridge. It's built from the Claude Design prototype `project/ISWM Plant App.dc.html`. The hardware code is adapted from [tsaaii/adex_lite](https://github.com/tsaaii/adex_lite).
+A Windows desktop app for the ISWM Donthali weighbridge. It's built from the Claude Design prototype. The hardware code is adapted from [tsaaii/adex_lite](https://github.com/tsaaii/adex_lite).
 
-- **Screens:** 1 Inward · 2 Outward · 3 Material recovery · 4 Tare · 5 Sync · 6 Reports, plus PIN sign-in and an admin settings page.
-- **Weighbridge:** serial (COM port) or `socket://ip:port`. The weight is pulled out of the indicator's text with a regex and multiplier, as in adex_lite. A built-in simulator lets you test without hardware.
-- **Cameras:** front and back, as a USB index, RTSP URL or HTTP snapshot URL. Live preview has zoom (− / + / mouse wheel). Save stores watermarked JPEGs.
-- **Records:** stored in SQLite in `ISWM_data\` next to the .exe. Tickets are `IN{R|C}YYMM####` for inward and `O YYMM####` for outward. Each direction has one counter that never resets, so a ticket number can't repeat.
-- **Sync:** uploads to Google Cloud Storage in the background as `agency/site/date/{entries,tares,batches,samples,corrections,images}/…`. The app keeps working offline.
-- **Reports:** Daily, Shift (shift times can be changed), Incomplete, and Hourly/Daily/Weekly/Monthly with CSV download.
+- **Screens:** 1 Inward · 2 Outward · 3 Material recovery · 4 Tare · 5 Sync · 6 Reports, plus PIN sign-in. Admin settings are hidden from operators.
+- **Weighbridge:** serial (COM port) or `socket://ip:port`, with the weight read by a regex and multiplier as in adex_lite. A built-in simulator is available for training.
+- **Cameras:** front and back, each USB, RTSP (Hikvision / Dahua / CP Plus / other) or HTTP. Live preview with zoom. Save stores full-resolution, watermarked photos.
+- **Records:** SQLite. Tickets are `IN{R|C}YYMM####` and `O YYMM####`, from counters that never reset.
+- **Sync:** to Google Cloud Storage in the background. Works offline.
+- **Reports:** Daily, Shift, Incomplete, and Hourly/Daily/Weekly/Monthly with CSV download.
 
-## Get the .exe
+## Install (for anyone)
 
-Each push runs the **Build Windows exe** GitHub Action. It runs the tests, builds with PyInstaller, and uploads `ISWM-windows.zip` as a build artifact under *Actions → run → Artifacts*. Pushing a tag such as `v1.0.0` also attaches the zip to a GitHub Release.
+1. Open the repository on GitHub → **Actions** → the latest green **Build Windows installer** run → download **ISWM-Setup** under *Artifacts*. For a tagged version, use **Releases** instead.
+2. Unzip it and double-click **ISWM-Setup.exe**. If Windows says "Windows protected your PC", click **More info → Run anyway**. The installer is not code-signed yet.
+3. Click **Next** until it finishes. It puts an **ISWM Plant** icon on the desktop and in the Start menu, and installs Microsoft Edge WebView2 if the PC doesn't have it.
+4. The app opens on **Set up the plant**. Type the site name, make an **admin password**, and add the first operator with a 4-number PIN. Write the admin password down.
 
-Unzip it anywhere and run `ISWM\ISWM.exe`. It needs Microsoft Edge WebView2, which is already on Windows 10/11.
+Data (records, photos, settings, logo) is kept in `C:\ProgramData\ISWM`. Back up that folder. Uninstalling the app does not delete it, and installing a newer `ISWM-Setup.exe` over the old one keeps everything.
 
-To build by hand on Windows:
+There's also **ISWM-portable** (a zip). Unzip it anywhere and run `ISWM.exe`. Its data goes in `ISWM_data` next to the exe.
 
-```bat
-pip install -r requirements.txt pyinstaller==6.13.0
-pyinstaller --noconfirm ISWM.spec
-```
+## Admin (hidden from operators)
 
-## First run
+Operators never see admin controls. To open them, press **Ctrl + Shift + A**, or tap the **site name 5 times** (top-left, or the big name on the sign-in screen), then type the admin password. An **Admin** button and a **Lock** button then appear in the top bar. Admin locks itself after 15 minutes without use, and five wrong passwords block tries for a minute.
 
-1. Sign in as **Operator 1** with PIN **0000**.
-2. Click the gear icon and enter admin PIN **0000**. In admin settings:
-   - Change the admin PIN, then add the operators with their own PINs.
-   - **Weighbridge:** turn off *Simulate*, then pick the COM port, baud rate, data bits, parity and stop bits. Change the regex only if the indicator's output needs it. *Check again* shows the live reading.
-   - **Cameras:** choose USB (with its device number), RTSP (`rtsp://user:pass@ip:554/stream1`) or HTTP snapshot for each camera.
-   - **Sync:** turn it on and enter the bucket name and the full path to the service-account `.json` key. The key needs *Storage Object Admin* on that bucket.
-   - **Ticket serials:** to continue from an older system, set the next inward and outward serial. They can only go up.
-3. Click **Save settings**.
+Only the admin can change:
+- site name, company and **logo** (PNG/JPG/WebP, under 2 MB, shown on the sign-in screen and top bar);
+- operators and their PINs (each operator needs their own PIN; easy PINs like 1111 or 1234 are refused);
+- the admin password (8+ characters, letters and numbers, must not contain an operator's PIN);
+- weighbridge, cameras, Google Cloud sync, ticket serials and the reports folder.
 
-The simulator ships switched on, so the app works straight away for training. **Turn it off before real use.** While it's on, the weights are not real.
+There are no default passwords or PINs.
+
+## Cameras: getting the clearest picture
+
+Pick **Type → RTSP** and the camera **Brand**. The brand fills in the best endpoints, so you only type the IP, user name and password. Passwords with `@ : / #` work, because they're encoded properly in the address.
+
+| Brand | Stream endpoint (main stream) | Photo snapshot endpoint |
+|---|---|---|
+| Hikvision | `/Streaming/Channels/101` | `/ISAPI/Streaming/channels/101/picture` |
+| Dahua, CP Plus | `/cam/realmonitor?channel=1&subtype=0` | `/cgi-bin/snapshot.cgi?channel=1` |
+| Other | from the camera's manual (often `/stream1`) | leave empty |
+
+Why photos are sharper than adex_lite's:
+- **Main stream, not sub-stream.** Hikvision `101` / Dahua `subtype=0` is the camera's full resolution. `102` / `subtype=1` is the small preview stream.
+- **No forced 640×480.** adex_lite asked every camera for 640×480. This app keeps the camera's own resolution. Admin shows it, for example "Live at 1920 × 1080", and warns when it's below 1280.
+- **RTSP over TCP.** Over UDP, lost packets smear and grey-out parts of the picture. TCP avoids that.
+- **Saved photos use the camera's own JPEG snapshot** when a snapshot endpoint is set. That picture has no video-compression blur. If the snapshot fails, the app falls back to the full-size video frame. Photos are saved at JPEG quality 95. Only the on-screen preview is made smaller.
+- **USB cameras** are asked for 1920×1080 MJPG instead of 640×480.
+
+On the camera itself (in its web page), these settings help most for number plates and loads:
+- Main stream at the highest resolution, **H.264** (H.265 can be slower to decode), at 15–25 fps.
+- Bitrate type **Constant**, about 4096–6144 kbps for 1080p and 8192 kbps for 4 MP.
+- I-frame interval equal to the frame rate (for example 25), so the picture recovers quickly after a truck moves.
+- **WDR** on for gates facing bright sky, and a fast shutter (1/250 s or faster) so moving plates don't blur.
+- A fixed IP address for each camera, so the app always finds it.
 
 ## Rules the app enforces
 
@@ -43,9 +64,24 @@ The simulator ships switched on, so the app works straight away for training. **
 - Net weight counts in reports only for complete records, meaning ones with both gross and tare.
 - Saved entries are never edited in the app. Operators use **Ask to correct (52)**, and the request is uploaded for the admin.
 
+## Build it yourself
+
+GitHub builds the installer on every push (`.github/workflows/build-exe.yml`). To build on a Windows PC instead, double-click `build.bat`. It makes a `.venv`, installs everything and builds `dist\ISWM\ISWM.exe`. By hand, in Command Prompt:
+
+```bat
+py -3.12 -m venv .venv
+.venv\Scripts\activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt pyinstaller
+python -m PyInstaller --noconfirm ISWM.spec
+```
+
+For the installer as well, install [Inno Setup 6](https://jrsoftware.org/isdl.php), download the [WebView2 bootstrapper](https://go.microsoft.com/fwlink/p/?LinkId=2124703) to `installer\MicrosoftEdgeWebview2Setup.exe`, then run `"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\ISWM.iss`. The result is `dist\ISWM-Setup.exe`.
+
 ## Run from source
 
 ```bash
+python -m venv .venv && .venv\Scripts\activate     # Linux/macOS: source .venv/bin/activate
 pip install -r requirements.txt
 python run_iswm.py              # app window
 python run_iswm.py --browser    # no window: prints a URL to open in a browser
@@ -63,13 +99,15 @@ python -m pytest -q tests
 | `iswm/service.py` | One method per UI action |
 | `iswm/server.py` | Local HTTP server on 127.0.0.1 with a per-launch token, camera MJPEG streams |
 | `iswm/main.py` | Starts everything and opens the pywebview window |
+| `installer/ISWM.iss` | Inno Setup script for `ISWM-Setup.exe` |
 | `web/` | The screens: React + htm, using the Tharuni design-system bundle, offline |
 | `project/`, `chats/`, `HANDOFF.md` | The original Claude Design handoff |
 
 ## Not in the prototype, added here
 
-- Admin settings page (gear icon) for hardware, operators, PINs, sync and serials.
+- First-run **Set up the plant** screen. Hidden admin settings, with a lock.
+- Logo upload.
 - **End shift** under the operator's name.
-- A red **Not saved** line when the app refuses a save, using the same plain wording.
+- A red **Not saved** line when the app refuses a save.
 - Sync shows **Sync off** until it is set up.
-- Download writes two CSVs to the reports folder, the summary table and every trip, and offers **Open folder**.
+- Download writes two CSVs, the summary and every trip, and offers **Open folder**.
