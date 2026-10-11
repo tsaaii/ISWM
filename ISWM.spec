@@ -10,7 +10,7 @@ a = Analysis(
     datas=[('web', 'web')],
     hiddenimports=['serial', 'serial.tools.list_ports', 'serial.urlhandler.protocol_socket',
                    'google.oauth2.service_account', 'google.auth.transport.requests', 'webview.platforms.edgechromium',
-                   'webview.platforms.winforms', 'clr_loader'],
+                   'webview.platforms.winforms', 'clr_loader', 'clr', 'pythonnet'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

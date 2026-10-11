@@ -3,6 +3,7 @@
     ISWM.exe                 normal start, opens the app window
     ISWM.exe --browser       no window; prints a URL to open in a browser
                              (for testing on a PC without WebView2)
+    ISWM.exe --check         check that the window parts load (used by the build)
 """
 import argparse
 import logging
@@ -27,8 +28,12 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="ISWM")
     ap.add_argument("--browser", action="store_true", help="run without a window; open the printed URL")
     ap.add_argument("--port", type=int, default=0)
+    ap.add_argument("--check", action="store_true", help="check the window parts load, write the result to the log, exit")
     args = ap.parse_args(argv)
     _log_setup()
+    if args.check:
+        from .window import self_check
+        sys.exit(0 if self_check() else 1)
 
     from .server import serve
     from .service import Service
@@ -42,12 +47,8 @@ def main(argv=None):
             while True:
                 time.sleep(3600)
         else:
-            import webview
-            window = webview.create_window(service.settings.get("site_name") or "ISWM", url,
-                                           width=1400, height=720, min_size=(1000, 560),
-                                           background_color="#F2FBF4", text_select=False)
-            service.window = window
-            webview.start(private_mode=False)
+            from .window import run
+            run(service, url)
     except KeyboardInterrupt:
         pass
     finally:

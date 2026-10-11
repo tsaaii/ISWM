@@ -115,6 +115,12 @@ The installer allows this through the Windows firewall on **private** networks o
 
 **Full quality for a big screen or many viewers.** The built-in page sends ISWM's light preview. For full-resolution video on a control-room screen, let the cameras or NVR serve it directly: open the RTSP main stream in VLC, use the NVR's own app (Hik-Connect, DMSS), or run [MediaMTX](https://github.com/bluenviron/mediamtx) or [go2rtc](https://github.com/AlexxIT/go2rtc), which re-stream RTSP to browsers over WebRTC with low delay.
 
+## If ISWM does not open
+
+- **"Failed to resolve Python.Runtime.Loader.Initialize"**: Windows marked the files as downloaded from the internet, so .NET would not load them. This happens with the portable zip. From version 1.3.1 the app removes that mark from its own files and starts normally. For older copies, right-click the zip → **Properties** → tick **Unblock** → OK before unzipping, or use **ISWM-Setup.exe**.
+- If the app window still cannot open, ISWM opens the same screens in a Microsoft Edge app window (no address bar), and logs the reason in `logs\iswm.log`.
+- `ISWM.exe --check` tests the window parts and writes *window check ok* or the error to the log.
+
 ## Admin (hidden from operators)
 
 Operators never see admin controls. To open them, press **Ctrl + Shift + A**, or tap the **site name 5 times** (top-left, or the big name on the sign-in screen), then type the admin password. An **Admin** button and a **Lock** button then appear in the top bar. Admin locks itself after 15 minutes without use, and five wrong passwords block tries for a minute.
