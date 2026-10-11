@@ -380,3 +380,27 @@ def test_live_view_needs_password(tmp_path, monkeypatch):
         assert "password_hash" not in svc.settings.public()["live_view"]
     finally:
         svc.liveview.stop()
+
+
+def test_window_falls_back_instead_of_crashing(tmp_path, monkeypatch):
+    """If the app window can't open (e.g. pythonnet blocked), the app must not crash."""
+    import builtins
+    from iswm import window
+    monkeypatch.setenv("ISWM_DATA_DIR", str(tmp_path))
+    real_import = builtins.__import__
+
+    def fake_import(name, *a, **k):
+        if name == "webview":
+            raise RuntimeError("Failed to resolve Python.Runtime.Loader.Initialize")
+        return real_import(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    opened, shown = [], []
+    monkeypatch.setattr(window, "open_in_edge", lambda url, title: opened.append(url) or True)
+    svc = Service(Settings(str(tmp_path / "s.json")), DB(str(tmp_path / "d.sqlite3")), start_devices=False)
+    window.run(svc, "http://127.0.0.1:1/index.html#t=x")
+    assert opened == ["http://127.0.0.1:1/index.html#t=x"] and svc.window is None
+    monkeypatch.setattr(window, "open_in_edge", lambda url, title: False)
+    monkeypatch.setattr(window, "message", lambda text, title="ISWM": shown.append(text))
+    window.run(svc, "http://127.0.0.1:1/index.html#t=x")
+    assert "t=x" in shown[0]
