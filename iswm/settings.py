@@ -60,7 +60,9 @@ DEFAULTS = {
         "min_weight_kg": 10,
     },
     "cameras": {"front": camera_defaults(0), "back": camera_defaults(1)},
-    "cloud": {"enabled": False, "bucket_name": "", "credentials_path": ""},
+    # Google Cloud: records go to Firestore; photos only if "photos" is small/full (needs bucket_name).
+    "cloud": {"enabled": False, "credentials_path": "", "project_id": "", "database": "(default)", "site_id": "",
+              "sync_minutes": 10, "photos": "off", "bucket_name": ""},
     "shifts": {"count": 3, "starts": ["06:00", "14:00", "22:00"]},
     "reports_folder": "",
     # How long files are kept on this PC. 0 = keep forever. Records in the database are always kept.

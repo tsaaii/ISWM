@@ -23,7 +23,7 @@ API = {"boot", "login", "logout", "live", "state", "vehicle_status", "vehicle_pi
        "save_in", "save_out", "save_tare", "save_batch", "save_sample", "ask_correction", "retry_sync",
        "set_shifts", "report", "export_csv", "open_folder", "toggle_full", "setup", "admin_login", "admin_view",
        "admin_save", "admin_lock", "admin_set_logo", "admin_clear_logo", "admin_fix_entry",
-       "admin_rename_vehicle", "admin_run_cleanup", "entry_history", "export_trips"}
+       "admin_rename_vehicle", "admin_run_cleanup", "entry_history", "export_trips", "camera_watch"}
 MAX_BODY = 4 * 1024 * 1024
 
 mimetypes.add_type("application/javascript", ".js")
@@ -36,7 +36,7 @@ class _Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
     allow_reuse_address = True
 
 
-def stream_mjpeg(handler, cam, interval=0.08):
+def stream_mjpeg(handler, cam, interval=0.08, demand=False):
     """Send a camera as a multipart JPEG stream until the viewer leaves or the camera goes quiet."""
     handler.send_response(200)
     handler.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
@@ -46,7 +46,9 @@ def stream_mjpeg(handler, cam, interval=0.08):
     handler.close_connection = True
     try:
         last, idle_since = None, time.monotonic()
-        while time.monotonic() - idle_since < 5:  # camera gone: end the stream, the page reconnects
+        while time.monotonic() - idle_since < (12 if demand else 5):  # camera gone: end the stream
+            if demand:  # this viewer is what keeps the camera on
+                cam.demand(5)
             jpg = cam.jpeg()
             if jpg is not None and jpg is not last:
                 handler.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " +
@@ -137,7 +139,7 @@ def make_handler(service, token, log_errors):
             cam = service.cams.cams.get(name)
             if cam is None:
                 return self._send(404, b"{}")
-            stream_mjpeg(self, cam)
+            stream_mjpeg(self, cam, demand=self.path.find("watch=1") >= 0)
 
     return Handler
 

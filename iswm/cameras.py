@@ -12,6 +12,12 @@ add_watermark(). Picture quality is better than adex_lite because:
     has no video-compression blur; they are written at JPEG quality 95;
   * USB cameras are asked for 1920x1080 MJPG instead of 640x480;
   * only the on-screen preview is shrunk (to keep the UI light).
+
+Cameras run only on demand (no constant streaming): while an operator has
+"View live" on, for two minutes after a vehicle is picked (so the photo is
+ready at Save), or while the admin preview / live-view page is watching.
+Otherwise the stream is closed. With a snapshot endpoint set, Save takes the
+photo straight from the camera without opening the video stream at all.
 """
 import os
 import sys
@@ -65,6 +71,16 @@ class Camera:
         self._thread = None
         self.error = None
         self.size = None
+        self._want_until = 0.0
+        self._woke = threading.Event()
+
+    def demand(self, seconds):
+        """Keep the camera running for at least ``seconds`` more."""
+        self._want_until = max(self._want_until, time.monotonic() + seconds)
+        self._woke.set()
+
+    def wanted(self):
+        return time.monotonic() < self._want_until
 
     def start(self):
         self.stop()
@@ -96,15 +112,27 @@ class Camera:
         with self._lock:
             return None if self._frame is None or not self.live() else self._frame.copy()
 
-    def photo(self):
-        """Best picture for a saved photo: the camera's own snapshot if set, else the newest frame."""
+    def photo(self, wait=8.0):
+        """Best picture for a saved photo: the camera's own snapshot if set, else a frame from the stream
+        (starting the stream briefly if it was off)."""
         _, snap = camera_urls(self.cfg)
         if snap and cv2 is not None:
             try:
                 return fetch_jpeg(snap, self.cfg.get("username") or "", self.cfg.get("password") or "", timeout=3)
             except Exception as e:
                 self.error = "Snapshot failed, used video frame: " + str(e)[:120]
-        return self.frame()
+        if (self.cfg.get("type") or "USB").upper() == "NONE" or not (self._thread and self._thread.is_alive()):
+            return None
+        if self.error and not self.live():
+            wait = min(wait, 1.5)  # camera already failing: don't hold up Save
+        self.demand(20)
+        end = time.monotonic() + wait
+        while time.monotonic() < end:
+            f = self.frame()
+            if f is not None:
+                return f
+            time.sleep(0.1)
+        return None
 
     def _set(self, frame):
         now = time.monotonic()
@@ -147,10 +175,25 @@ class Camera:
             self.error = "Type the camera IP address"
             return
         user, pw = self.cfg.get("username") or "", self.cfg.get("password") or ""
-        poll_jpeg = False  # HTTP endpoints that return single JPEGs are polled instead of streamed
+        poll_jpeg = None  # HTTP: None = not checked yet, True = endpoint gives single JPEGs (polled), False = video
         cap, fails = None, 0
         while not self._stop.is_set():
+            if not self.wanted():  # nobody needs the picture: close the stream, use no network
+                if cap is not None:
+                    cap.release()
+                    cap = None
+                with self._lock:
+                    self._frame, self._jpeg = None, None
+                self._woke.wait(1.0)
+                self._woke.clear()
+                continue
             try:
+                if kind == "HTTP" and poll_jpeg is None:
+                    try:
+                        self._set(fetch_jpeg(_strip_auth(url), user, pw))
+                        poll_jpeg = True
+                    except Exception:
+                        poll_jpeg = False
                 if poll_jpeg:
                     self._set(fetch_jpeg(_strip_auth(url), user, pw))
                     self.error, fails = None, 0
@@ -229,7 +272,19 @@ class Cameras:
             c.restart(cfg.get(name, {}))
 
     def status(self):
-        return {name: {"live": c.live(), "error": c.error, "size": c.size} for name, c in self.cams.items()}
+        return {name: {"live": c.live(), "error": c.error, "size": c.size, "on": c.wanted()}
+                for name, c in self.cams.items()}
+
+    def demand(self, seconds):
+        for c in self.cams.values():
+            c.demand(seconds)
+
+    def demand_for_photo(self, seconds):
+        """A vehicle was picked: warm up only cameras that need the video stream for their photo.
+        Cameras with a snapshot endpoint give the photo directly, with no stream at all."""
+        for c in self.cams.values():
+            if not camera_urls(c.cfg)[1]:
+                c.demand(seconds)
 
     def grab(self):
         """Best pictures from both cameras, taken at the same moment (None where a camera is down)."""
@@ -238,7 +293,7 @@ class Cameras:
         for t in threads:
             t.start()
         for t in threads:
-            t.join(timeout=5)
+            t.join(timeout=12)
         return {n: out.get(n) for n in self.cams}
 
     @staticmethod

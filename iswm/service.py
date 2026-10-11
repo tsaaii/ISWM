@@ -15,7 +15,7 @@ import time
 
 from . import __version__, paths
 from .cameras import Cameras
-from .cloud import CloudSync
+from .cloud import CloudSync, slug
 from .db import DB, MATERIALS, RECYC, IN_TYPES, RuleError, norm_vno, yymm
 from .settings import (BRANDS, Settings, check_pin, hash_password, hash_pin, password_problem,
                        pin_problem)
@@ -108,7 +108,7 @@ class Service:
         queued = len(self.db.queue_waiting())
         return {"admin": self.admin_active(), "wb": self.wb.live(), "simulate": bool(self.settings.get("weighbridge").get("simulate")),
                 "minKg": float(self.settings.get("weighbridge").get("min_weight_kg") or 10),
-                "sync": {"state": self.cloud.state, "queued": queued, "message": self.cloud.message},
+                "sync": {**self.cloud.status(), "queued": queued},
                 "cams": self.cams.status()}
 
     def state(self):
@@ -138,9 +138,17 @@ class Service:
     def vehicle_status(self, flow, vno):
         return {"status": self.db.vehicle_status(flow, norm_vno(vno))}
 
+    def camera_watch(self, on=True):
+        """The operator has "View live" on; the screen repeats this every few seconds while it is."""
+        if on:
+            self.cams.demand(20)
+        return {}
+
     def vehicle_picked(self, flow, vno):
-        """Called when the operator picks a vehicle. In simulator mode a load drives onto the bridge."""
+        """Called when the operator picks a vehicle. Cameras start so the photo is ready at Save.
+        In simulator mode a load drives onto the bridge."""
         vno = norm_vno(vno)
+        self.cams.demand_for_photo(90)
         st = self.db.vehicle_status(flow, vno)
         if self.settings.get("weighbridge").get("simulate"):
             can = (st in ("known", "new")) if flow == "in" else (st == "known") if flow == "out" else \
@@ -230,8 +238,7 @@ class Service:
         return {}
 
     def retry_sync(self):
-        return {"state": self.cloud.retry_now(), "message": self.cloud.message,
-                "queued": len(self.db.queue_waiting())}
+        return {**self.cloud.status(), "state": self.cloud.retry_now(), "queued": len(self.db.queue_waiting())}
 
     # reports -----------------------------------------------------------------
     def set_shifts(self, count, starts):
@@ -459,6 +466,16 @@ class Service:
         allowed = {"site_name", "agency_name", "weighbridge", "cameras", "cloud", "reports_folder",
                    "outward_destinations", "retention", "live_view"}
         patch = {k: v for k, v in (patch or {}).items() if k in allowed}
+        if "cloud" in patch:
+            c = dict(patch["cloud"])
+            c["sync_minutes"] = min(60, max(0, int(c.get("sync_minutes") or 0)))
+            c["photos"] = c.get("photos") if c.get("photos") in ("off", "small", "full") else "off"
+            c["site_id"] = slug(c.get("site_id") or self.settings.get("site_name")) if c.get("site_id") else ""
+            if c.get("enabled") and not os.path.isfile(c.get("credentials_path") or ""):
+                raise RuleError("Key file not found. Type the full path to the service account .json file.")
+            if c.get("photos") != "off" and not c.get("bucket_name"):
+                raise RuleError("Photo upload needs a Cloud Storage bucket name.")
+            patch["cloud"] = c
         if "retention" in patch:
             patch["retention"] = {k: max(0, int(patch["retention"].get(k) or 0))
                                   for k in ("photos_days", "reports_days", "logs_days", "backups_days")}

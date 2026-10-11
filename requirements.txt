@@ -2,4 +2,5 @@ pywebview>=5.4
 pyserial>=3.5
 opencv-python-headless>=4.11
 numpy>=2.2
-google-cloud-storage>=3.1
+google-auth>=2.30
+requests>=2.32

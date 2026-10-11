@@ -85,7 +85,7 @@ class App extends React.Component {
       trip: null,
       admin: {open:false, pw:'', err:null, view:null, draft:null, ops:null, newPw:'', newPw2:'', counters:null, msg:null},
       setup: {site:'', agency:'', pw:'', pw2:'', op:'', pin:'', err:null},
-      ddIdx: -1, osk: null, oskShift: false, help: false
+      ddIdx: -1, osk: null, oskShift: false, help: false, camWatch: false
     };
   }
 
@@ -165,6 +165,12 @@ class App extends React.Component {
       this.refresh();
     });
   }
+  // Cameras are off unless needed: "View live" keeps them on while this screen repeats the request.
+  setCamWatch(on) {
+    clearInterval(this.camT);
+    const beat = () => { if (this.state.camWatch && ['in','out','tare'].includes(this.state.tab) && this.state.loggedIn) api('camera_watch', {on:true}).catch(() => {}); else this.setCamWatch(false); };
+    this.setState({camWatch:on}, () => { if (on) { beat(); this.camT = setInterval(beat, 8000); } });
+  }
   focusField(key) {
     setTimeout(() => { const el = document.getElementById('fld-' + key); if (el) { this.progFocus = true; el.focus(); this.progFocus = false; } }, 30);
   }
@@ -228,7 +234,8 @@ class App extends React.Component {
       now: new Date().toLocaleDateString('en-IN',{day:'2-digit', month:'short', year:'numeric'}) + ' · ' + hms()
     };
     const dd = s.dd;
-    const open = key => () => { clearTimeout(this.ddT); this.setState({dd:key, ddIdx:-1}); };
+    // lists open when the operator clicks or types, not when the app moves the cursor there itself
+    const open = key => () => { clearTimeout(this.ddT); if (!this.progFocus) this.setState({dd:key, ddIdx:-1}); };
     // Arrow keys move through an open list, Enter picks; returns true if the key was used.
     const nav = (e, key, options) => {
       if (this.anyDialog()) return false;
@@ -322,7 +329,8 @@ class App extends React.Component {
       const name = i===0 ? 'front' : 'back', key = flow + code, z = (s.zoom||{})[key] || 1;
       const step = d => this.setState(st => { const cur = (st.zoom||{})[key] || 1; return {zoom:{...(st.zoom||{}), [key]: Math.round(Math.min(4, Math.max(1, cur + d))*100)/100}}; });
       const camLive = !!(s.live.cams[name] && s.live.cams[name].live);
-      return {code, name, live: camLive, label: i===0 ? 'Front camera' : 'Back camera', z, zLabel: z.toFixed(1) + '×',
+      const cst = s.live.cams[name] || {};
+      return {code, name, live: camLive, on: !!cst.on, setUp: cst.error !== 'Not set up', label: i===0 ? 'Front camera' : 'Back camera', z, zLabel: z.toFixed(1) + '×',
         zoomIn: () => step(0.5), zoomOut: () => step(-0.5), zoomReset: () => this.setState(st => ({zoom:{...(st.zoom||{}), [key]: 1}})),
         onWheel: e => step(e.deltaY < 0 ? 0.25 : -0.25)};
     });
@@ -439,6 +447,7 @@ ${this.renderHelp()}
       const m = {r:['source','Residential'], c:['source','Commercial'], m:['type','Mixed'], w:['type','Wet'], d:['type','Dry']}[(e.key || '').toLowerCase()];
       if (m) { e.preventDefault(); return this.setF('in', {[m[0]]: m[1]}); }
     }
+    if (e.altKey && work && (e.key || '').toLowerCase() === 'v') { e.preventDefault(); return this.setCamWatch(!s.camWatch); }
     if (e.altKey && s.tab === 'out' && (e.key || '').toLowerCase() === 'k') { e.preventDefault(); return this.setF('out', {manual:!s.out.manual}); }
     if (!inText && work && e.key.length === 1 && /[a-z0-9]/i.test(e.key) && !e.ctrlKey && !e.altKey) {
       // typing anywhere on a weighing screen goes into the vehicle box
@@ -484,7 +493,7 @@ ${this.renderHelp()}
     const syncPill = mode==='synced' ? {label:'Synced', bg:GRN, fg:'#fff'}
       : mode==='error' ? {label:'Sync error', bg:RED, fg:'#fff'}
       : mode==='off' ? {label:'Sync off', bg:'#E8EDEA', fg:'#151515'}
-      : {label:'Offline · ' + qn + ' queued', bg:'#E8EDEA', fg:'#151515'};
+      : {label:'Offline', bg:'#E8EDEA', fg:'#151515'};
     const wbOff = !this.wbOn();
     const tabs = [['in',1,'Inward'],['out',2,'Outward'],['rec',3,'Material recovery'],['tare',4,'Tare'],['sync',5,'Sync'],['rep',6,'Reports']].map(([id,n,label]) => {
       const on = s.tab===id;
@@ -512,8 +521,8 @@ ${this.renderHelp()}
   </div>
   <div style=${css('display:flex;align-items:center;gap:8px;flex:none')}>
     ${wbOff && h`<div style=${css('display:flex;align-items:center;gap:7px;height:36px;padding:0 12px;white-space:nowrap;border-radius:999px;background:' + RED + ';color:#fff;font-size:14px;font-weight:700')}><span style=${css('width:9px;height:9px;border-radius:50%;background:#fff')}></span>Bridge off</div>`}
-    <button onClick=${() => this.goTab('sync')} style=${css('display:flex;align-items:center;gap:8px;height:36px;padding:0 12px 0 4px;white-space:nowrap;border-radius:999px;border:2px solid #151515;background:' + syncPill.bg + ';color:' + syncPill.fg + ';font-size:14px;font-weight:700;cursor:pointer')}>
-      <span style=${css('display:inline-flex;align-items:center;justify-content:center;min-width:28px;height:28px;border-radius:999px;background:#151515;color:#fff;font-size:14px;box-shadow:0 0 0 2px #fff')}>5</span>${syncPill.label}
+    <button onClick=${() => this.goTab('sync')} title="Open 5 Sync" style=${css('display:flex;align-items:center;gap:8px;height:36px;padding:0 14px;white-space:nowrap;border-radius:999px;border:2px solid #151515;background:' + syncPill.bg + ';color:' + syncPill.fg + ';font-size:14px;font-weight:700;cursor:pointer')}>
+      ${syncPill.label}
     </button>
     <button onClick=${() => this.toggleFull()} title=${fullLabel} aria-label=${fullLabel} style=${css('display:flex;align-items:center;justify-content:center;flex:none;width:38px;height:38px;padding:0;border-radius:50%;border:2px solid var(--ink-300);background:#fff;color:var(--ink-900);cursor:pointer')}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d=${fullIcon}></path></svg></button>
     ${this.adminButtons()}
@@ -562,7 +571,7 @@ ${s.tab==='sync' && this.renderSync()}
         <span style=${css('width:1px;height:20px;background:var(--ink-200)')}></span>
         <span style=${css('font-size:17px;color:var(--ink-900);font-variant-numeric:tabular-nums')}>${k.now}</span>
       </div>
-      ${k.hasLast && h`
+      ${k.hasLast && !k.lastOk && h`
         <div style=${css('flex:1;min-width:0;display:flex;align-items:center;gap:10px;height:40px;padding:0 14px 0 6px;border-radius:999px;background:' + (k.lastOk ? 'var(--green-050)' : '#FDECEC') + ';border:1px solid ' + (k.lastOk ? 'var(--green-200)' : '#C62828'))}>
           <span style=${css('padding:3px 10px;border-radius:999px;background:' + (k.lastOk ? 'var(--green-600)' : '#C62828') + ';color:#fff;font-size:13px;font-weight:700;flex:none')}>${k.lastOk ? 'Saved' : 'Not saved'}</span>
           <span style=${css('flex:1;min-width:0;font-size:15px;color:var(--ink-900);white-space:nowrap;overflow:hidden;text-overflow:ellipsis')}>${k.lastText}</span>
@@ -577,7 +586,9 @@ ${s.tab==='sync' && this.renderSync()}
             : h`<div style=${css('position:absolute;inset:0;display:flex;align-items:center;justify-content:center;gap:10px;color:var(--ink-700);font-size:18px;font-weight:700;white-space:nowrap;transform:scale(' + cam.z + ');transition:transform 150ms cubic-bezier(0.22,1,0.36,1)')}>
               <span style=${css('display:inline-flex;align-items:center;justify-content:center;min-width:30px;height:28px;padding:0 7px;border-radius:999px;background:' + k.cc + ';color:' + k.ccFg + ';font-size:15px')}>${cam.code}</span>${cam.label}
             </div>`}
-          <span style=${css('position:absolute;left:12px;top:12px;display:flex;align-items:center;gap:6px;font-size:12px;letter-spacing:0.14em;text-transform:uppercase;font-weight:700;color:' + (cam.live ? '#fff' : 'var(--ink-700)') + ';' + (cam.live ? 'padding:3px 8px;border-radius:999px;background:rgba(18,26,20,0.55)' : ''))}><span style=${css('width:8px;height:8px;border-radius:50%;background:' + (cam.live ? 'var(--red-600)' : 'var(--ink-500)'))}></span>${cam.live ? h`<span style=${css('display:inline-flex;align-items:center;gap:6px')}>${cam.code} · Live</span>` : 'No signal'}</span>
+          ${!cam.live && cam.setUp && h`<button onClick=${() => this.setCamWatch(true)} title="Show the camera (Alt+V)" style=${css('position:absolute;left:50%;top:calc(50% + 30px);transform:translateX(-50%);height:40px;padding:0 16px;border-radius:999px;border:2px solid var(--ink-700);background:#fff;color:var(--ink-900);font-size:15px;font-weight:700;cursor:pointer;white-space:nowrap')}>${cam.on ? 'Starting…' : 'View live'}</button>`}
+          ${cam.live && s.camWatch && h`<button onClick=${() => this.setCamWatch(false)} title="Stop the live picture (Alt+V)" style=${css('position:absolute;right:12px;top:10px;height:30px;padding:0 12px;border-radius:999px;border:none;background:rgba(18,26,20,0.65);color:#fff;font-size:13px;font-weight:700;cursor:pointer')}>Stop</button>`}
+          <span style=${css('position:absolute;left:12px;top:12px;display:flex;align-items:center;gap:6px;font-size:12px;letter-spacing:0.14em;text-transform:uppercase;font-weight:700;color:' + (cam.live ? '#fff' : 'var(--ink-700)') + ';' + (cam.live ? 'padding:3px 8px;border-radius:999px;background:rgba(18,26,20,0.55)' : ''))}><span style=${css('width:8px;height:8px;border-radius:50%;background:' + (cam.live ? 'var(--red-600)' : 'var(--ink-500)'))}></span>${cam.live ? h`<span style=${css('display:inline-flex;align-items:center;gap:6px')}>${cam.code} · Live</span>` : !cam.setUp ? 'Not set up' : cam.on ? 'Starting' : 'Off'}</span>
           <div style=${css('position:absolute;right:10px;bottom:10px;display:flex;align-items:center;gap:4px;padding:4px;border-radius:999px;background:#fff;box-shadow:var(--shadow-md)')}>
             <button onClick=${cam.zoomOut} aria-label="Zoom out" style=${css('width:40px;height:40px;border-radius:50%;border:none;background:var(--ink-050);font-size:24px;line-height:1;color:var(--ink-900);cursor:pointer')}>−</button>
             <button onClick=${cam.zoomReset} style=${css('min-width:52px;height:40px;border:none;background:none;font-size:15px;font-weight:700;color:var(--ink-900);cursor:pointer')}>${cam.zLabel}</button>
@@ -1029,7 +1040,7 @@ ${s.tab==='in' && h`
   // --- 5 sync ------------------------------------------------------------------
   renderSync() {
     const s = this.state, srv = s.srv, mode = s.live.sync.state, qn = s.live.sync.queued;
-    const syncCard = mode==='synced' ? {bg:'#E4F6E9', fg:'#0E5230', kicker:'Online', title:'All synced.', text:'Every entry and photo is on the server.'}
+    const syncCard = mode==='synced' ? {bg:'#E4F6E9', fg:'#0E5230', kicker:'Online', title:'All synced.', text:'New entries are sent together every few minutes to save internet.'}
       : mode==='error' ? {bg:'#FDECEC', fg:RED, kicker:'Sync error', title:'The server did not answer.', text:'Entries are safe on this computer. Try again, or call support and say “black 51”.'}
       : mode==='off' ? {bg:'#E8EDEA', fg:'#151515', kicker:'Sync off', title:'Sync is not set up.', text:'Keep working. Entries are saved on this computer. Ask the admin to set up sync, then they send by themselves.'}
       : {bg:'#E8EDEA', fg:'#151515', kicker:'Offline', title:'No internet right now.', text:'Keep working. Entries are saved on this computer and send by themselves when the internet is back.'};
@@ -1051,9 +1062,12 @@ ${s.tab==='in' && h`
       <span style=${css('font-size:72px;line-height:1;color:var(--ink-900)')}>${qn}</span>
       <span style=${css('font-size:20px;color:var(--ink-700)')}>waiting to send</span>
     </div>
+    <div style=${css('font-size:16px;color:var(--ink-700);line-height:1.5')}>
+      ${s.live.sync.lastSent ? 'Last sent ' + s.live.sync.lastSent + '. ' : ''}${mode !== 'off' && qn > 0 && s.live.sync.nextIn != null ? 'Next send in about ' + Math.max(1, s.live.sync.nextIn) + ' min. ' : ''}${s.live.sync.bytes ? 'Internet used since start: ' + (s.live.sync.bytes / 1024).toFixed(0) + ' KB.' : ''}
+    </div>
     <div style=${css('flex:1')}></div>
     ${s.retryMsg && h`<div style=${css('font-size:16px;font-weight:700;color:var(--ink-900)')}>${s.retryMsg}</div>`}
-    <${Button} size="lg" disabled=${s.retrying} onClick=${retry} style=${{width:'100%', justifyContent:'center', padding:'18px 28px', fontSize:'22px', whiteSpace:'nowrap'}}><span style=${css('display:inline-flex;align-items:center;justify-content:center;min-width:32px;height:30px;padding:0 7px;border-radius:999px;background:#151515;box-shadow:0 0 0 2px #fff;color:#fff;font-size:16px')}>51</span>${s.retrying ? 'Trying…' : 'Retry now'}<//>
+    <${Button} size="lg" disabled=${s.retrying} onClick=${retry} style=${{width:'100%', justifyContent:'center', padding:'18px 28px', fontSize:'22px', whiteSpace:'nowrap'}}><span style=${css('display:inline-flex;align-items:center;justify-content:center;min-width:32px;height:30px;padding:0 7px;border-radius:999px;background:#151515;box-shadow:0 0 0 2px #fff;color:#fff;font-size:16px')}>51</span>${s.retrying ? 'Sending…' : 'Send now'}<//>
   </div>
   <div style=${css('flex:1;min-width:0;display:flex;flex-direction:column;gap:18px')}>
     <div style=${css('display:flex;flex-direction:column;border:2px solid var(--ink-300);border-radius:20px;overflow:hidden;max-height:210px')}>
@@ -1209,7 +1223,7 @@ ${this.renderAdmin()}
       return h`
       <div class="admin-sec">
         <h4>${name==='front' ? 'Front camera' : 'Back camera'}</h4>
-        ${cl.live ? h`<img class="admin-thumb" src=${camUrl(name)} alt="" />` : h`<div class="admin-thumb" style=${{padding:'0 12px', textAlign:'center'}}>${cl.error || 'No signal'}</div>`}
+        ${cl.live || A.preview ? h`<img class="admin-thumb" src=${camUrl(name) + '&watch=1'} alt="" />` : h`<div class="admin-thumb" style=${{padding:'0 12px', textAlign:'center'}}>${cl.error || 'No signal'}</div>`}
         <span style=${css('font-size:13px;color:var(--ink-700)')}>${cl.live && cl.size ? 'Live at ' + cl.size[0] + ' × ' + cl.size[1] + (cl.size[0] < 1280 ? ' — low. Use the main stream.' : '') : 'Saved changes show here after Save settings.'}</span>
         <div class="admin-grid">
           <label class="admin-row">Type<select value=${c.type} onChange=${e => setType(name, e.target.value)}>${['USB','RTSP','HTTP','None'].map(o => h`<option key=${o} value=${o}>${o}</option>`)}</select></label>
@@ -1349,9 +1363,18 @@ ${this.renderAdmin()}
     <div class="admin-grid">
       <div class="admin-sec">
         <h4>Sync to Google Cloud</h4>
+        <span style=${css('font-size:13px;color:var(--ink-700)')}>Records go to Firestore. Nothing is sent when there is nothing new. Photos stay on this PC unless you choose to upload them.</span>
         ${row('Turn on sync', ['cloud','enabled'], 'check')}
-        ${row('Bucket name', ['cloud','bucket_name'])}
-        ${row('Service account key file (full path to .json)', ['cloud','credentials_path'])}
+        ${row('Service account key file (full path to .json)', ['cloud','credentials_path'], 'text', null, 'C:\\ISWM\\key.json')}
+        <div class="admin-grid">
+          ${row('Site ID (unique per site)', ['cloud','site_id'], 'text', null, 'iswm-donthali')}
+          ${row('Firestore database', ['cloud','database'], 'text', null, '(default)')}
+        </div>
+        <div class="admin-grid">
+          <label class="admin-row">Send new records<select value=${String(d.cloud.sync_minutes)} onChange=${e => upd(['cloud','sync_minutes'], Number(e.target.value))}>${[[0,'Right away'],[5,'Every 5 minutes'],[10,'Every 10 minutes'],[15,'Every 15 minutes'],[30,'Every 30 minutes'],[60,'Every hour']].map(([v,l]) => h`<option key=${v} value=${String(v)}>${l}</option>`)}</select></label>
+          <label class="admin-row">Upload photos<select value=${d.cloud.photos} onChange=${e => upd(['cloud','photos'], e.target.value)}>${[['off','No (saves internet)'],['small','Small, about 100 KB each'],['full','Full size, about 0.5 MB each']].map(([v,l]) => h`<option key=${v} value=${v}>${l}</option>`)}</select></label>
+        </div>
+        ${d.cloud.photos !== 'off' && row('Cloud Storage bucket for photos', ['cloud','bucket_name'])}
       </div>
       <div class="admin-sec">
         <h4>Ticket serials</h4>
@@ -1451,6 +1474,7 @@ ${this.renderAdmin()}
       ['Inward choices', 'Alt + R Residential, Alt + C Commercial, Alt + M Mixed, Alt + W Wet, Alt + D Dry'],
       ['Outward', 'Enter moves Vehicle → Material → Going to. In Material, type the first letter. Alt + K small scale.'],
       ['Everything else', 'Tab moves to the next button or box, Shift + Tab goes back, Enter or Space presses.'],
+      ['Cameras', 'Alt + V shows or stops the live picture. Cameras also start by themselves when a vehicle is picked.'],
       ['Close / cancel', 'Esc closes lists, boxes and full view'],
       ['Mouse only', 'Click any typing box and an on-screen keyboard appears.'],
       ['Admin', 'Ctrl + Shift + A, or tap the site name 5 times'],

@@ -175,7 +175,7 @@ class LiveView:
                             return self._send(503, b"Too many viewers", "text/plain")
                         lv.streams += 1
                     try:
-                        stream_mjpeg(self, cam, interval=0.15)  # ~6 frames a second is plenty for watching
+                        stream_mjpeg(self, cam, interval=0.15, demand=True)  # ~6 frames a second is plenty for watching
                     finally:
                         with lv._lock:
                             lv.streams -= 1
