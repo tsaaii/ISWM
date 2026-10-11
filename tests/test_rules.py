@@ -5,7 +5,7 @@ import pytest
 
 from iswm.db import DB, RuleError, shift_index, ticket_in, ticket_out, yymm
 from iswm.service import Service
-from iswm.settings import Settings, check_pin, hash_pin
+from iswm.settings import Settings, camera_urls, check_pin, hash_pin, password_problem, pin_problem
 from iswm.weighbridge import Weighbridge
 
 
@@ -82,10 +82,28 @@ def test_shift_index_wraps_midnight():
     assert shift_index("03:10", starts) == 2
 
 
-def test_pins():
-    assert check_pin("0000", "")
+def test_pins_and_passwords():
+    assert not check_pin("0000", "")  # no default PIN any more
     stored = hash_pin("4821")
     assert check_pin("4821", stored) and not check_pin("0000", stored)
+    assert pin_problem("1111") and pin_problem("12a4") and not pin_problem("4821")
+    assert password_problem("0000") and password_problem("abcdefgh") and password_problem("password1"[:8])
+    assert password_problem("Plant4821x", ["4821"])
+    assert password_problem("Donthali2026") is None
+
+
+def test_camera_urls_quote_passwords():
+    cfg = {"type": "RTSP", "ip": "192.168.1.64", "port": "554", "username": "admin", "password": "p@ss:w/rd#1",
+           "endpoint": "/Streaming/Channels/101", "snapshot_endpoint": "/ISAPI/Streaming/channels/101/picture",
+           "http_port": "80"}
+    stream, snap = camera_urls(cfg)
+    assert stream == "rtsp://admin:p%40ss%3Aw%2Frd%231@192.168.1.64:554/Streaming/Channels/101"
+    assert snap == "http://192.168.1.64:80/ISAPI/Streaming/channels/101/picture"
+    assert camera_urls({"type": "USB"}) == ("", "")
+
+
+def _setup(svc):
+    svc.setup("ISWM Test", "Lions Group", "Donthali2026", "Operator 1", "4821")
 
 
 def test_weighbridge_parse_and_stability():
@@ -108,7 +126,8 @@ def test_service_save_flow(tmp_path, monkeypatch):
     svc = Service(Settings(str(tmp_path / "s.json")), DB(str(tmp_path / "d.sqlite3")), start_devices=False)
     with pytest.raises(RuleError):
         svc.save_in("AP 39 UA 4521", "Residential", "Mixed")  # not signed in
-    svc.login("Operator 1", "0000")
+    _setup(svc)
+    svc.login("Operator 1", "4821")
     with pytest.raises(RuleError):
         svc.save_in("AP 39 UA 4521", "Residential", "Mixed")  # no steady weight
     monkeypatch.setattr(svc.wb, "capture", lambda: 7000.0)
@@ -184,18 +203,45 @@ def test_cloud_sync_drains_queue_with_fake_bucket(tmp_path):
     assert any(k.startswith("Lions_Group/ISWM_Donthali/") and "/entries/INR" in k for k in uploaded)
 
 
-def test_admin_requires_pin_and_updates_operators(tmp_path, monkeypatch):
+def test_setup_admin_and_logo(tmp_path, monkeypatch):
+    import base64
     monkeypatch.setenv("ISWM_DATA_DIR", str(tmp_path))
     svc = Service(Settings(str(tmp_path / "s.json")), DB(str(tmp_path / "d.sqlite3")), start_devices=False)
+    assert svc.boot()["needsSetup"] and svc.boot()["operators"] == []
     with pytest.raises(RuleError):
-        svc.admin_save({"site_name": "X"})
+        svc.setup("Site", "Co", "short", "Op", "4821")  # weak password
     with pytest.raises(RuleError):
-        svc.admin_login("1234")
-    svc.admin_login("0000")
-    svc.admin_save({"site_name": "ISWM Test", "admin_pin_hash": "ignored"},
-                   operators=[{"name": "Ramesh K.", "pin": "4821"}], adminPin="9999")
-    assert svc.boot()["site"] == "ISWM Test" and svc.boot()["operators"] == ["Ramesh K."]
-    assert svc.settings.check_admin("9999") and not svc.settings.check_admin("0000")
+        svc.setup("Site", "Co", "Plant4821x", "Op", "4821")  # contains operator PIN
+    _setup(svc)
+    assert not svc.boot()["needsSetup"]
     with pytest.raises(RuleError):
-        svc.login("Ramesh K.", "0000")
-    svc.login("Ramesh K.", "4821")
+        _setup(svc)  # setup cannot run twice (would let anyone reset the admin password)
+    with pytest.raises(RuleError):
+        svc.admin_save({"site_name": "X"})  # locked
+    with pytest.raises(RuleError):
+        svc.admin_login("0000")
+    svc.admin_login("Donthali2026")
+    assert svc.live()["admin"]
+    svc.admin_save({"site_name": "ISWM Test 2", "admin_password_hash": "ignored"},
+                   operators=[{"name": "Operator 1", "pin": ""}, {"name": "Ramesh K.", "pin": "5932"}],
+                   adminPassword="NewPass2027")
+    assert svc.boot()["site"] == "ISWM Test 2" and svc.boot()["operators"] == ["Operator 1", "Ramesh K."]
+    assert svc.settings.check_admin("NewPass2027") and not svc.settings.check_admin("Donthali2026")
+    with pytest.raises(RuleError):  # same PIN as Operator 1
+        svc.admin_save({}, operators=[{"name": "Operator 1", "pin": ""}, {"name": "Ramesh K.", "pin": "4821"}])
+    with pytest.raises(RuleError):  # new operator without PIN
+        svc.admin_save({}, operators=[{"name": "Operator 1", "pin": ""}, {"name": "New", "pin": ""}])
+    with pytest.raises(RuleError):
+        svc.admin_set_logo("data:image/png;base64," + base64.b64encode(b"not an image").decode())
+    png = b"\x89PNG\r\n\x1a\n" + b"\0" * 32
+    assert svc.admin_set_logo("data:image/png;base64," + base64.b64encode(png).decode())["logo"]
+    assert svc.logo_path().endswith("logo.png") and svc.boot()["logo"]
+    svc.admin_lock()
+    with pytest.raises(RuleError):
+        svc.admin_clear_logo()
+    svc.login("Ramesh K.", "5932")
+    for _ in range(5):
+        with pytest.raises(RuleError):
+            svc.admin_login("wrong-pass1")
+    with pytest.raises(RuleError, match="Wait"):
+        svc.admin_login("NewPass2027")  # locked out after 5 wrong tries

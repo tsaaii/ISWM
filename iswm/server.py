@@ -21,11 +21,13 @@ from .db import RuleError
 
 API = {"boot", "login", "logout", "live", "state", "vehicle_status", "vehicle_picked", "vehicle_cleared",
        "save_in", "save_out", "save_tare", "save_batch", "save_sample", "ask_correction", "retry_sync",
-       "set_shifts", "report", "export_csv", "open_folder", "toggle_full", "admin_login", "admin_view",
-       "admin_save"}
+       "set_shifts", "report", "export_csv", "open_folder", "toggle_full", "setup", "admin_login", "admin_view",
+       "admin_save", "admin_lock", "admin_set_logo", "admin_clear_logo"}
+MAX_BODY = 4 * 1024 * 1024
 
 mimetypes.add_type("application/javascript", ".js")
 mimetypes.add_type("text/css", ".css")
+mimetypes.add_type("image/webp", ".webp")
 
 
 class _Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
@@ -59,6 +61,13 @@ def make_handler(service, token, log_errors):
         def do_GET(self):
             url = urllib.parse.urlparse(self.path)
             query = urllib.parse.parse_qs(url.query)
+            if url.path == "/branding/logo":
+                p = service.logo_path() if self._authorised(query) else None
+                if not p:
+                    return self._send(404, b"", "text/plain")
+                with open(p, "rb") as f:
+                    body = f.read()
+                return self._send(200, body, mimetypes.guess_type(p)[0] or "image/png")
             if url.path.startswith("/cam/"):
                 if not self._authorised(query):
                     return self._send(403, b"{}")
@@ -81,6 +90,8 @@ def make_handler(service, token, log_errors):
                 return self._send(404, json.dumps({"error": "Unknown call"}).encode())
             try:
                 length = int(self.headers.get("Content-Length") or 0)
+                if length > MAX_BODY:
+                    raise RuleError("That is too big.")
                 args = json.loads(self.rfile.read(length) or b"{}") if length else {}
                 result = getattr(service, name)(**args)
                 body, code = json.dumps({"ok": True, "data": result}, default=str).encode(), 200

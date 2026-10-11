@@ -1,9 +1,14 @@
 """Where the app finds its bundled files and keeps its data.
 
 Bundled files (web/) live inside the PyInstaller bundle when frozen.
-Data (database, photos, settings, reports) lives in a folder next to the
-.exe, like adex_lite's ``data`` folder, so a site can back it up by copying
-one folder. ISWM_DATA_DIR overrides it (used by tests).
+Data (database, photos, settings, reports) lives in one folder, so a site
+backs up by copying that folder:
+
+  * installed with ISWM-Setup.exe: C:\\ProgramData\\ISWM (Program Files is
+    read-only, and ProgramData is shared by every Windows user on the PC);
+  * unzipped copy: an ``ISWM_data`` folder next to ISWM.exe, if that folder
+    exists or the .exe's folder is writable and not under Program Files;
+  * ISWM_DATA_DIR overrides both (used by tests).
 """
 import os
 import sys
@@ -28,7 +33,13 @@ def data_dir():
     if override:
         path = override
     elif is_frozen():
-        path = os.path.join(os.path.dirname(sys.executable), "ISWM_data")
+        exe_dir = os.path.dirname(sys.executable)
+        portable = os.path.join(exe_dir, "ISWM_data")
+        installed = os.path.exists(os.path.join(exe_dir, "installed.txt"))
+        if os.path.isdir(portable) or (not installed and os.access(exe_dir, os.W_OK)):
+            path = portable
+        else:
+            path = os.path.join(os.environ.get("PROGRAMDATA") or os.path.expanduser("~"), "ISWM")
     else:
         path = os.path.join(resource_dir(), "ISWM_data")
     os.makedirs(path, exist_ok=True)

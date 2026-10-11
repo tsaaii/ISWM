@@ -63,7 +63,7 @@ const isoDay = d => d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0
 const shortDay = iso => { const d = new Date(iso + 'T00:00:00'); return d.toLocaleDateString('en-IN', {day:'numeric', month:'short'}); };
 const blank = () => ({typed:'', veh:null, source:'Residential', type:'Mixed', material:null, dest:'', manual:false, manualKg:'', reason:null, wbTried:false});
 const EMPTY_SRV = {vehicles:[], pending:[], nextIn:1, nextOut:1, yymm:'', dests:[], today:[], queue:[], trips:[], sampleDue:false, month:'', shifts:{count:3, starts:['06:00','14:00','22:00']}};
-const EMPTY_LIVE = {wb:{connected:false, weight:0, stable:false}, simulate:false, minKg:10, sync:{state:'offline', queued:0}, cams:{front:{live:false}, back:{live:false}}};
+const EMPTY_LIVE = {admin:false, wb:{connected:false, weight:0, stable:false}, simulate:false, minKg:10, sync:{state:'offline', queued:0}, cams:{front:{live:false}, back:{live:false}}};
 
 // A small coloured code badge, used everywhere in the prototype.
 const badge = (code, bg, fg, extra) => h`<span style=${css('display:inline-flex;align-items:center;justify-content:center;min-width:30px;height:24px;padding:0 7px;border-radius:999px;background:' + bg + ';color:' + fg + ';font-weight:700;font-size:13px;flex:none;' + (extra||''))}>${code}</span>`;
@@ -81,7 +81,8 @@ class App extends React.Component {
       sample: {open:false, kg:'', wet:'', dry:'', inert:'', err:null},
       retrying: false, retryMsg: null,
       rep: {view:'daily', period:'Weekly', from: isoDay(monthAgo), to: today, dir:'Both', data:null, msg:null, file:null},
-      admin: {open:false, pin:'', err:null, view:null, draft:null, ops:null, newAdminPin:'', counters:null, msg:null}
+      admin: {open:false, pw:'', err:null, view:null, draft:null, ops:null, newPw:'', newPw2:'', counters:null, msg:null},
+      setup: {site:'', agency:'', pw:'', pw2:'', op:'', pin:'', err:null}
     };
   }
 
@@ -92,7 +93,10 @@ class App extends React.Component {
     requestAnimationFrame(this.fit); this.fitT = setTimeout(this.fit, 300);
     this.onFs = () => { if (!document.fullscreenElement && !(this.state.boot && this.state.boot.inWindow)) this.setState({full:false}); };
     document.addEventListener('fullscreenchange', this.onFs);
-    this.onKey = e => { if (e.key === 'Escape' && this.state.full) this.toggleFull(); };
+    this.onKey = e => {
+      if (e.key === 'Escape' && this.state.full) this.toggleFull();
+      if (e.ctrlKey && e.shiftKey && (e.key === 'A' || e.key === 'a') && this.state.boot && !this.state.boot.needsSetup) { e.preventDefault(); this.openAdmin(); }
+    };
     window.addEventListener('keydown', this.onKey);
     this.clock = setInterval(() => this.forceUpdate(), 1000);
     this.livePoll = setInterval(() => this.pollLive(), 200);
@@ -122,6 +126,7 @@ class App extends React.Component {
   }
 
   // --- helpers ---------------------------------------------------------------
+  logoUrl() { const b = this.state.boot; return b && b.logo ? '/branding/logo?t=' + encodeURIComponent(TOKEN) + '&v=' + b.logo : null; }
   setF(flow, patch, cb) { this.setState(s => ({[flow]: {...s[flow], ...patch}}), cb); }
   vehicles() { const m = {}; this.state.srv.vehicles.forEach(v => { m[flat(v.vno)] = v; }); return m; }
   pendingOf(vno) { const k = flat(vno); return this.state.srv.pending.find(p => flat(p.vno) === k); }
@@ -307,7 +312,7 @@ class App extends React.Component {
     return h`
 <div style=${css('position:fixed;inset:0;background:var(--green-050);display:flex;align-items:center;justify-content:center;overflow:hidden')}>
 <div data-screen-label="ISWM Plant App" style=${css('width:1366px;height:620px;flex:none;transform:scale(' + scale + ');transform-origin:center;background:#fff;box-shadow:var(--shadow-lg);display:flex;flex-direction:column;position:relative;overflow:hidden;color:var(--ink-700)')}>
-${s.loggedIn ? this.renderApp() : this.renderLogin()}
+${s.boot.needsSetup ? this.renderSetup() : s.loggedIn ? this.renderApp() : this.renderLogin()}
 ${this.renderDialogs()}
 </div>
 </div>`;
@@ -331,8 +336,9 @@ ${this.renderDialogs()}
     return h`
 <div data-screen-label="0 Start shift" style=${css('flex:1;display:flex;align-items:center;justify-content:center;gap:96px;padding:48px;position:relative')}>
   <div style=${css('display:flex;flex-direction:column;gap:18px;max-width:420px')}>
+    ${this.logoUrl() && h`<img src=${this.logoUrl()} alt="" style=${css('max-width:260px;max-height:88px;object-fit:contain;align-self:flex-start')} />`}
     <div style=${css('font-size:12px;letter-spacing:0.14em;text-transform:uppercase;font-weight:700;color:var(--green-700)')}>${boot.agency}</div>
-    <div style=${css('font-size:52px;line-height:1.08;letter-spacing:-0.015em;color:var(--ink-900)')}>${boot.site}.</div>
+    <div onClick=${() => this.secretTap()} style=${css('font-size:52px;line-height:1.08;letter-spacing:-0.015em;color:var(--ink-900);user-select:none')}>${boot.site}.</div>
     <div style=${css('font-size:22px;line-height:1.4;color:var(--ink-700)')}>Tap your name, then type your 4-number PIN. The shift starts by itself.</div>
   </div>
   <div style=${css('display:flex;flex-direction:column;gap:22px;width:420px')}>
@@ -346,15 +352,11 @@ ${this.renderDialogs()}
       ${keypad.map(k => h`<button key=${k.label} onClick=${k.press} style=${css('height:64px;border-radius:16px;border:2px solid var(--ink-300);background:#fff;font-size:28px;color:var(--ink-900);cursor:pointer')}>${k.label}</button>`)}
     </div>
     <div style=${css('font-size:14px;color:' + (L.err ? '#C62828' : 'var(--ink-700)') + ';text-align:center;font-weight:' + (L.err ? 700 : 400))}>
-      ${L.err ? L.err : !L.name ? 'Tap your name first.' : boot.defaultPins ? 'First time? The PIN is 0000. Ask the admin to change it.' : ' '}
+      ${L.err ? L.err : boot.operators.length === 0 ? 'No operators yet. Ask the admin to add you.' : !L.name ? 'Tap your name first.' : ' '}
     </div>
   </div>
-  ${this.gearButton('position:absolute;right:16px;bottom:16px')}
+  ${this.state.live.admin && h`<div style=${css('position:absolute;right:16px;bottom:16px;display:flex;gap:8px')}>${this.adminButtons()}</div>`}
 </div>`;
-  }
-
-  gearButton(extra) {
-    return h`<button onClick=${() => this.setState(st => ({admin:{...st.admin, open:true, pin:'', err:null, view:null}}))} title="Admin settings" aria-label="Admin settings" style=${css('display:flex;align-items:center;justify-content:center;flex:none;width:38px;height:38px;padding:0;border-radius:50%;border:2px solid var(--ink-300);background:#fff;color:var(--ink-900);cursor:pointer;' + (extra||''))}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path><circle cx="12" cy="12" r="3"></circle></svg></button>`;
   }
 
   renderApp() {
@@ -377,7 +379,8 @@ ${this.renderDialogs()}
     const endShift = () => { if (window.confirm('End shift for ' + boot.operator + '?')) api('logout').then(() => this.setState(st => ({loggedIn:false, boot:{...st.boot, operator:null}}))); };
     return h`
 <div style=${css('height:64px;flex:none;display:flex;align-items:center;gap:12px;padding:0 16px;background:#fff')}>
-  <div style=${css('display:flex;flex-direction:column;line-height:1.15;flex:none;white-space:nowrap')}>
+  ${this.logoUrl() && h`<img src=${this.logoUrl()} alt="" style=${css('height:40px;max-width:120px;object-fit:contain;flex:none')} />`}
+  <div onClick=${() => this.secretTap()} style=${css('display:flex;flex-direction:column;line-height:1.15;flex:none;white-space:nowrap;user-select:none')}>
     <span style=${css('font-size:17px;font-weight:700;color:var(--ink-900)')}>${boot.site}</span>
     <span style=${css('font-size:12px;color:var(--ink-700)')}>${boot.agency}</span>
   </div>
@@ -394,7 +397,7 @@ ${this.renderDialogs()}
       <span style=${css('display:inline-flex;align-items:center;justify-content:center;min-width:28px;height:28px;border-radius:999px;background:#151515;color:#fff;font-size:14px;box-shadow:0 0 0 2px #fff')}>5</span>${syncPill.label}
     </button>
     <button onClick=${() => this.toggleFull()} title=${fullLabel} aria-label=${fullLabel} style=${css('display:flex;align-items:center;justify-content:center;flex:none;width:38px;height:38px;padding:0;border-radius:50%;border:2px solid var(--ink-300);background:#fff;color:var(--ink-900);cursor:pointer')}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d=${fullIcon}></path></svg></button>
-    ${this.gearButton()}
+    ${this.adminButtons()}
     <button onClick=${endShift} title="End shift" style=${css('display:flex;flex-direction:column;align-items:flex-end;line-height:1.2;padding:0 0 0 4px;white-space:nowrap;border:none;background:none;cursor:pointer')}>
       <span style=${css('font-size:14px;font-weight:700;color:var(--ink-900)')}>${boot.operator}</span>
       <span style=${css('font-size:12px;color:var(--ink-700)')}>End shift</span>
@@ -904,73 +907,151 @@ ${this.renderAdmin()}
 <//>`;
   }
 
-  // --- admin settings (not in the prototype; kept plain) ------------------------
+  // --- admin (hidden: Ctrl+Shift+A, or tap the site name 5 times) ------------------
+  secretTap() {
+    const now = Date.now();
+    this.taps = (this.taps || []).filter(t => now - t < 2500).concat(now);
+    if (this.taps.length >= 5) { this.taps = []; this.openAdmin(); }
+  }
+  openAdmin() {
+    if (this.state.live.admin) return this.loadAdminView();
+    this.setState(st => ({admin:{...st.admin, open:true, pw:'', err:null, view:null}}));
+  }
+  loadAdminView() {
+    const setA = patch => this.setState(st => ({admin:{...st.admin, ...patch}}));
+    return api('admin_view').then(view => setA({open:true, view, draft:JSON.parse(JSON.stringify(view.settings)), ops:view.settings.operators.map(o => ({name:o.name, pin:'', has:o.has_pin})), counters:{...view.counters}, newPw:'', newPw2:'', err:null, msg:null}))
+      .catch(e => setA({open:true, view:null, pw:'', err:e.message}));
+  }
+  lockAdmin() {
+    api('admin_lock').then(() => { this.setState(st => ({admin:{...st.admin, open:false, view:null, pw:''}})); this.pollLive(); });
+  }
+  adminButtons() {
+    if (!this.state.live.admin) return null;
+    return h`
+    <button onClick=${() => this.loadAdminView()} title="Admin settings" aria-label="Admin settings" style=${css('display:flex;align-items:center;gap:6px;height:38px;padding:0 12px 0 8px;flex:none;border-radius:999px;border:2px solid #151515;background:#151515;color:#fff;cursor:pointer;font-size:14px;font-weight:700;white-space:nowrap')}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path><circle cx="12" cy="12" r="3"></circle></svg>Admin</button>
+    <button onClick=${() => this.lockAdmin()} title="Lock admin" style=${css('height:38px;padding:0 12px;flex:none;border-radius:999px;border:2px solid var(--ink-300);background:#fff;color:var(--ink-900);cursor:pointer;font-size:14px;font-weight:700')}>Lock</button>`;
+  }
+
   renderAdmin() {
     const A = this.state.admin;
     if (!A.open) return null;
     const setA = patch => this.setState(st => ({admin:{...st.admin, ...patch}}));
-    const close = () => setA({open:false, pin:'', view:null, draft:null, ops:null, err:null, msg:null});
+    const close = () => setA({open:false, pw:'', view:null, draft:null, ops:null, err:null, msg:null});
     if (!A.view) {
-      const go = () => api('admin_login', {pin:A.pin}).then(view => setA({view, draft:JSON.parse(JSON.stringify(view.settings)), ops:view.settings.operators.map(o => ({name:o.name, pin:'', has:o.has_pin})), counters:{...view.counters}, newAdminPin:'', err:null, msg:null}))
-        .catch(e => setA({err:e.message, pin:''}));
+      const go = () => api('admin_login', {password:A.pw}).then(() => { setA({pw:''}); this.pollLive(); return this.loadAdminView(); })
+        .catch(e => setA({err:e.message, pw:''}));
       return h`
-<${Dialog} open=${true} title="Admin settings" onClose=${close} width=${420}>
+<${Dialog} open=${true} title="Admin" onClose=${close} width=${440}>
   <div style=${css('display:flex;flex-direction:column;gap:14px')}>
-    <${Input} label="Admin PIN" type="password" inputMode="numeric" maxLength=${4} value=${A.pin} autoFocus=${true} onChange=${e => setA({pin:e.target.value.replace(/\D/g,'').slice(0,4), err:null})} onKeyDown=${e => { if (e.key==='Enter') go(); }} error=${A.err || undefined} helper="First time? It is 0000. Change it below after you sign in." />
+    <${Input} label="Admin password" type="password" value=${A.pw} autoFocus=${true} onChange=${e => setA({pw:e.target.value, err:null})} onKeyDown=${e => { if (e.key==='Enter' && A.pw) go(); }} error=${A.err || undefined} inputStyle=${{fontSize:'20px', padding:'12px 14px'}} />
     <div style=${css('display:flex;justify-content:flex-end;gap:10px')}>
       <${Button} variant="ghost" onClick=${close}>Cancel<//>
-      <${Button} disabled=${A.pin.length!==4} onClick=${go}>Open<//>
+      <${Button} disabled=${!A.pw} onClick=${go}>Open<//>
     </div>
   </div>
 <//>`;
     }
-    const d = A.draft, live = A.view.live;
+    const d = A.draft, live = this.state.live, brands = A.view.brands || {};
     const upd = (path, val) => { const nd = JSON.parse(JSON.stringify(d)); let o = nd; path.slice(0,-1).forEach(k => { o = o[k]; }); o[path[path.length-1]] = val; setA({draft:nd, msg:null, err:null}); };
-    const row = (label, path, type, opts) => {
+    const row = (label, path, type, opts, hint) => {
       const val = path.reduce((o,k) => o == null ? o : o[k], d);
       const onChange = e => upd(path, type==='number' ? (e.target.value === '' ? '' : Number(e.target.value)) : type==='check' ? e.target.checked : e.target.value);
       if (type === 'select') return h`<label class="admin-row">${label}<select value=${val} onChange=${onChange}>${opts.map(o => h`<option key=${o} value=${o}>${o}</option>`)}</select></label>`;
       if (type === 'check') return h`<label style=${css('display:flex;align-items:center;gap:10px;font-size:15px;font-weight:700;color:var(--ink-900)')}><input type="checkbox" checked=${!!val} onChange=${onChange} style=${{width:'20px', height:'20px'}} />${label}</label>`;
-      return h`<label class="admin-row">${label}<input type=${type||'text'} value=${val == null ? '' : val} onChange=${onChange} list=${opts ? 'dl-' + path.join('-') : undefined} />${opts && h`<datalist id=${'dl-' + path.join('-')}>${opts.map(o => h`<option key=${o} value=${o} />`)}</datalist>`}</label>`;
+      return h`<label class="admin-row">${label}<input type=${type||'text'} value=${val == null ? '' : val} placeholder=${hint || ''} onChange=${onChange} list=${opts ? 'dl-' + path.join('-') : undefined} />${opts && h`<datalist id=${'dl-' + path.join('-')}>${opts.map(o => h`<option key=${o} value=${o} />`)}</datalist>`}</label>`;
     };
     const wbLive = live.wb;
-    const camBox = name => h`
+    const setBrand = (name, brand) => {
+      const nd = JSON.parse(JSON.stringify(d)), c = nd.cameras[name], b = brands[brand] || {};
+      c.brand = brand;
+      if (c.type === 'RTSP') { c.endpoint = b.rtsp || c.endpoint; c.port = c.port || '554'; }
+      c.snapshot_endpoint = b.snapshot || '';
+      setA({draft:nd, msg:null, err:null});
+    };
+    const setType = (name, type) => {
+      const nd = JSON.parse(JSON.stringify(d)), c = nd.cameras[name], b = brands[c.brand] || {};
+      c.type = type;
+      if (type === 'RTSP') { c.port = '554'; c.endpoint = b.rtsp || '/stream1'; }
+      if (type === 'HTTP') { c.port = '80'; c.endpoint = '/mjpeg'; }
+      setA({draft:nd, msg:null, err:null});
+    };
+    const camBox = name => {
+      const c = d.cameras[name], cl = live.cams[name] || {}, ip = c.type === 'RTSP' || c.type === 'HTTP';
+      return h`
       <div class="admin-sec">
         <h4>${name==='front' ? 'Front camera' : 'Back camera'}</h4>
-        ${live.cams[name] && live.cams[name].live ? h`<img class="admin-thumb" src=${camUrl(name)} alt="" />` : h`<div class="admin-thumb">${(live.cams[name] && live.cams[name].error) || 'No signal'}</div>`}
+        ${cl.live ? h`<img class="admin-thumb" src=${camUrl(name)} alt="" />` : h`<div class="admin-thumb" style=${{padding:'0 12px', textAlign:'center'}}>${cl.error || 'No signal'}</div>`}
+        <span style=${css('font-size:13px;color:var(--ink-700)')}>${cl.live && cl.size ? 'Live at ' + cl.size[0] + ' × ' + cl.size[1] + (cl.size[0] < 1280 ? ' — low. Use the main stream.' : '') : 'Saved changes show here after Save settings.'}</span>
         <div class="admin-grid">
-          ${row('Type', ['cameras', name, 'type'], 'select', ['USB','RTSP','HTTP','None'])}
-          ${row('USB number', ['cameras', name, 'index'], 'number')}
+          <label class="admin-row">Type<select value=${c.type} onChange=${e => setType(name, e.target.value)}>${['USB','RTSP','HTTP','None'].map(o => h`<option key=${o} value=${o}>${o}</option>`)}</select></label>
+          ${ip ? h`<label class="admin-row">Brand<select value=${c.brand} onChange=${e => setBrand(name, e.target.value)}>${Object.keys(brands).map(o => h`<option key=${o} value=${o}>${o}</option>`)}</select></label>`
+               : c.type === 'USB' ? row('USB number (0, 1, 2…)', ['cameras', name, 'index'], 'number') : h`<span></span>`}
         </div>
-        ${row('RTSP or HTTP address', ['cameras', name, 'url'])}
+        ${ip && h`<${React.Fragment}>
+          <div class="admin-grid">
+            ${row('IP address', ['cameras', name, 'ip'], 'text', null, '192.168.1.64')}
+            ${row(c.type === 'RTSP' ? 'RTSP port' : 'Port', ['cameras', name, 'port'], 'text', null, c.type === 'RTSP' ? '554' : '80')}
+            ${row('User name', ['cameras', name, 'username'], 'text', null, 'admin')}
+            ${row('Password', ['cameras', name, 'password'], 'password')}
+          </div>
+          ${row(c.type === 'RTSP' ? 'Stream endpoint (main stream for best picture)' : 'Endpoint', ['cameras', name, 'endpoint'])}
+          <div style=${css('display:grid;grid-template-columns:minmax(0,1fr) 100px;gap:10px')}>
+            ${row('Photo snapshot endpoint (sharpest photos; empty = use video frame)', ['cameras', name, 'snapshot_endpoint'])}
+            ${c.type === 'RTSP' ? row('Web port', ['cameras', name, 'http_port'], 'text', null, '80') : h`<span></span>`}
+          </div>
+          ${row('Full address instead (optional, overrides the fields above)', ['cameras', name, 'url'], 'text', null, 'rtsp://…')}
+        <//>`}
       </div>`;
+    };
     const ops = A.ops;
-    const save = () => api('admin_save', {patch:{site_name:d.site_name, agency_name:d.agency_name, weighbridge:d.weighbridge, cameras:d.cameras, cloud:d.cloud, reports_folder:d.reports_folder},
-        operators: ops.map(o => ({name:o.name, pin:o.pin})), adminPin: A.newAdminPin || null, counters: A.counters})
-      .then(view => { setA({view, draft:JSON.parse(JSON.stringify(view.settings)), ops:view.settings.operators.map(o => ({name:o.name, pin:'', has:o.has_pin})), counters:{...view.counters}, newAdminPin:'', msg:'Saved.', err:null}); api('boot').then(boot => this.setState({boot})); this.refresh(); })
+    const pickLogo = e => {
+      const f = e.target.files && e.target.files[0];
+      if (!f) return;
+      const r = new FileReader();
+      r.onload = () => api('admin_set_logo', {dataUrl:r.result}).then(x => { this.setState(st => ({boot:{...st.boot, logo:x.logo}})); setA({msg:'Logo saved.', err:null}); }).catch(er => setA({err:er.message}));
+      r.readAsDataURL(f);
+      e.target.value = '';
+    };
+    const clearLogo = () => api('admin_clear_logo').then(() => this.setState(st => ({boot:{...st.boot, logo:null}}))).catch(er => setA({err:er.message}));
+    const save = () => {
+      if (A.newPw && A.newPw !== A.newPw2) return setA({err:'The two admin passwords are not the same.', msg:null});
+      api('admin_save', {patch:{site_name:d.site_name, agency_name:d.agency_name, weighbridge:d.weighbridge, cameras:d.cameras, cloud:d.cloud, reports_folder:d.reports_folder},
+        operators: ops.map(o => ({name:o.name, pin:o.pin})), adminPassword: A.newPw || null, counters: A.counters})
+      .then(view => { setA({view, draft:JSON.parse(JSON.stringify(view.settings)), ops:view.settings.operators.map(o => ({name:o.name, pin:'', has:o.has_pin})), counters:{...view.counters}, newPw:'', newPw2:'', msg:'Saved.', err:null}); api('boot').then(boot => this.setState({boot})); this.refresh(); })
       .catch(e => setA({err:e.message, msg:null}));
-    const refreshLive = () => api('admin_view').then(view => setA({view})).catch(e => setA({err:e.message}));
+    };
+    const logoUrl = this.state.boot.logo ? '/branding/logo?t=' + encodeURIComponent(TOKEN) + '&v=' + this.state.boot.logo : null;
     return h`
-<${Dialog} open=${true} title="Admin settings" onClose=${close} width=${980}>
+<${Dialog} open=${true} title="Admin settings" onClose=${close} width=${1000}>
   <div style=${css('display:flex;flex-direction:column;gap:12px;max-height:400px;overflow-y:auto;padding-right:6px')}>
     <div class="admin-grid">
       <div class="admin-sec">
-        <h4>Site</h4>
+        <h4>Site and logo</h4>
         ${row('Site name', ['site_name'])}
         ${row('Company', ['agency_name'])}
+        <div style=${css('display:flex;align-items:center;gap:12px')}>
+          <div style=${css('width:120px;height:56px;border-radius:10px;border:2px dashed var(--ink-300);display:flex;align-items:center;justify-content:center;overflow:hidden;background:#fff;flex:none')}>${logoUrl ? h`<img src=${logoUrl} alt="Logo" style=${{maxWidth:'100%', maxHeight:'100%', objectFit:'contain'}} />` : h`<span style=${css('font-size:13px;color:var(--ink-700)')}>No logo</span>`}</div>
+          <label style=${css('display:inline-flex;align-items:center;height:36px;padding:0 14px;border-radius:999px;border:1px solid var(--green-600);color:var(--green-700);font-weight:700;font-size:14px;cursor:pointer')}>Choose logo…<input type="file" accept="image/png,image/jpeg,image/webp" onChange=${pickLogo} style=${{display:'none'}} /></label>
+          ${logoUrl && h`<button onClick=${clearLogo} style=${css('height:36px;padding:0 14px;border-radius:999px;border:1px solid var(--ink-300);background:#fff;font-size:14px;cursor:pointer')}>Remove</button>`}
+        </div>
+        <span style=${css('font-size:13px;color:var(--ink-700)')}>PNG, JPG or WebP, under 2 MB. A wide logo with a clear background looks best. Shown on the sign-in screen and top bar.</span>
         ${row('Reports folder (empty = inside data folder)', ['reports_folder'])}
         <span style=${css('font-size:13px;color:var(--ink-700)')}>${'Data folder: ' + A.view.dataFolder}</span>
       </div>
       <div class="admin-sec">
         <h4>Operators and PINs</h4>
+        <span style=${css('font-size:13px;color:var(--ink-700)')}>Each operator needs their own 4-number PIN. Leave PIN empty to keep the old one.</span>
         ${ops.map((o,i) => h`<div key=${i} style=${css('display:grid;grid-template-columns:minmax(0,1fr) 120px 36px;gap:8px;align-items:end')}>
           <label class="admin-row">Name<input value=${o.name} onChange=${e => { const n = ops.slice(); n[i] = {...o, name:e.target.value}; setA({ops:n}); }} /></label>
-          <label class="admin-row">${o.has ? 'New PIN' : 'PIN (now 0000)'}<input inputMode="numeric" maxLength=${4} value=${o.pin} onChange=${e => { const n = ops.slice(); n[i] = {...o, pin:e.target.value.replace(/\D/g,'').slice(0,4)}; setA({ops:n}); }} /></label>
+          <label class="admin-row">${o.has ? 'New PIN' : 'PIN'}<input type="password" inputMode="numeric" maxLength=${4} value=${o.pin} onChange=${e => { const n = ops.slice(); n[i] = {...o, pin:e.target.value.replace(/\D/g,'').slice(0,4)}; setA({ops:n}); }} /></label>
           <button onClick=${() => setA({ops: ops.filter((_,j) => j!==i)})} title="Remove" style=${css('height:38px;border-radius:10px;border:2px solid var(--ink-300);background:#fff;cursor:pointer;font-size:18px')}>×</button>
         </div>`)}
-        <div style=${css('display:flex;gap:10px;align-items:end')}>
-          <${Button} variant="secondary" size="sm" onClick=${() => setA({ops:[...ops, {name:'', pin:'', has:false}]})}>Add operator<//>
-          <label class="admin-row" style=${{marginLeft:'auto', width:'160px'}}>New admin PIN<input inputMode="numeric" maxLength=${4} value=${A.newAdminPin} onChange=${e => setA({newAdminPin:e.target.value.replace(/\D/g,'').slice(0,4)})} /></label>
+        <${Button} variant="secondary" size="sm" onClick=${() => setA({ops:[...ops, {name:'', pin:'', has:false}]})} style=${{alignSelf:'flex-start'}}>Add operator<//>
+        <h4 style=${{marginTop:'6px'}}>Change admin password</h4>
+        <span style=${css('font-size:13px;color:var(--ink-700)')}>At least 8 characters with letters and numbers. Must not contain an operator's PIN. Leave empty to keep it.</span>
+        <div class="admin-grid">
+          <label class="admin-row">New admin password<input type="password" value=${A.newPw} onChange=${e => setA({newPw:e.target.value})} /></label>
+          <label class="admin-row">Type it again<input type="password" value=${A.newPw2} onChange=${e => setA({newPw2:e.target.value})} /></label>
         </div>
       </div>
     </div>
@@ -979,11 +1060,10 @@ ${this.renderAdmin()}
       <div style=${css('display:flex;align-items:center;gap:14px;font-size:15px;color:var(--ink-900)')}>
         <span style=${css('padding:3px 12px;border-radius:999px;font-weight:700;color:#fff;background:' + (wbLive.connected ? GRN : RED))}>${wbLive.connected ? 'Reading ' + fmt(wbLive.weight) + ' kg' + (wbLive.stable ? ' · stable' : ' · settling') : 'Not connected'}</span>
         <span style=${css('color:var(--ink-700)')}>${wbLive.error || ''}</span>
-        <${Button} variant="secondary" size="sm" onClick=${refreshLive}>Check again<//>
       </div>
       ${row('Simulate weighbridge (testing only — no real weights)', ['weighbridge','simulate'], 'check')}
       <div style=${css('display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px 14px')}>
-        ${row('COM port', ['weighbridge','com_port'], 'text', A.view.ports)}
+        ${row('COM port', ['weighbridge','com_port'], 'text', A.view.ports, 'COM3')}
         ${row('Baud rate', ['weighbridge','baud_rate'], 'select', [1200,2400,4800,9600,19200,38400,57600,115200])}
         ${row('Data bits', ['weighbridge','data_bits'], 'select', [7,8])}
         ${row('Parity', ['weighbridge','parity'], 'select', ['None','Odd','Even','Mark','Space'])}
@@ -1020,6 +1100,35 @@ ${this.renderAdmin()}
     <${Button} onClick=${save}>Save settings<//>
   </div>
 <//>`;
+  }
+
+  // --- first run: set up this computer ------------------------------------------------
+  renderSetup() {
+    const S = this.state.setup;
+    const set = patch => this.setState(st => ({setup:{...st.setup, ...patch, err:null}}));
+    const go = () => {
+      if (S.pw !== S.pw2) return this.setState(st => ({setup:{...st.setup, err:'The two admin passwords are not the same.'}}));
+      api('setup', {site:S.site, agency:S.agency, adminPassword:S.pw, operatorName:S.op, operatorPin:S.pin})
+        .then(boot => this.setState({boot}))
+        .catch(e => this.setState(st => ({setup:{...st.setup, err:e.message}})));
+    };
+    const field = (label, key, type, hint, extra) => h`<label class="admin-row" style=${{fontSize:'15px'}}>${label}<input type=${type||'text'} value=${S[key]} placeholder=${hint||''} onChange=${e => set({[key]: key==='pin' ? e.target.value.replace(/\D/g,'').slice(0,4) : e.target.value})} style=${{height:'46px', fontSize:'18px'}} ...${extra||{}} /></label>`;
+    return h`
+<div data-screen-label="Set up" style=${css('flex:1;display:flex;align-items:center;justify-content:center;gap:72px;padding:40px 56px')}>
+  <div style=${css('display:flex;flex-direction:column;gap:16px;max-width:400px')}>
+    <div style=${css('font-size:12px;letter-spacing:0.14em;text-transform:uppercase;font-weight:700;color:var(--green-700)')}>First time on this computer</div>
+    <div style=${css('font-size:48px;line-height:1.08;letter-spacing:-0.015em;color:var(--ink-900)')}>Set up the plant.</div>
+    <div style=${css('font-size:19px;line-height:1.45;color:var(--ink-700)')}>Type the site name, make an admin password, and add the first operator. The admin password opens settings later: press Ctrl + Shift + A, or tap the site name 5 times.</div>
+    <div style=${css('font-size:15px;line-height:1.45;color:var(--ink-700)')}>Write the admin password down and keep it safe. Operators should not know it.</div>
+  </div>
+  <div style=${css('display:flex;flex-direction:column;gap:12px;width:520px')}>
+    <div class="admin-grid">${field('Site name', 'site', 'text', 'ISWM Donthali')}${field('Company', 'agency', 'text', 'Lions Group')}</div>
+    <div class="admin-grid">${field('Admin password', 'pw', 'password', '8+ letters and numbers')}${field('Type it again', 'pw2', 'password')}</div>
+    <div class="admin-grid">${field('First operator name', 'op', 'text', 'Ramesh K.')}${field('Operator 4-number PIN', 'pin', 'password', '', {inputMode:'numeric', maxLength:4})}</div>
+    <div style=${css('min-height:22px;font-size:15px;font-weight:700;color:#C62828')}>${S.err || ''}</div>
+    <${Button} size="lg" disabled=${!(S.site && S.pw && S.pw2 && S.op && S.pin.length===4)} onClick=${go} style=${{justifyContent:'center', fontSize:'20px'}}>Finish set-up<//>
+  </div>
+</div>`;
   }
 }
 
