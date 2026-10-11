@@ -10,3 +10,7 @@ input[type=date],input[type=time],select{font-family:var(--font-body)}
 .admin-row{display:flex;flex-direction:column;gap:4px;font-size:14px;font-weight:700;color:var(--ink-900)}
 .admin-row input,.admin-row select{height:38px;padding:0 10px;border-radius:10px;border:2px solid var(--ink-300);font-size:16px;color:var(--ink-900);background:#fff;font-family:var(--font-body);font-weight:400;box-sizing:border-box;width:100%}
 .admin-thumb{width:100%;aspect-ratio:16/9;border-radius:10px;background:#C9CFCB;object-fit:cover;display:flex;align-items:center;justify-content:center;color:var(--ink-700);font-size:14px;font-weight:700}
+/* keyboard users can always see where they are */
+button:focus-visible,select:focus-visible,a:focus-visible,[tabindex]:focus-visible{outline:3px solid #0E5230;outline-offset:2px}
+input[type=checkbox]:focus-visible+span{box-shadow:0 0 0 3px #0E5230}
+input[type=date]:focus-visible,input[type=time]:focus-visible{outline:3px solid #0E5230;outline-offset:1px}
