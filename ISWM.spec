@@ -9,7 +9,7 @@ a = Analysis(
     binaries=[],
     datas=[('web', 'web')],
     hiddenimports=['serial', 'serial.tools.list_ports', 'serial.urlhandler.protocol_socket',
-                   'google.cloud.storage', 'google.auth', 'webview.platforms.edgechromium',
+                   'google.oauth2.service_account', 'google.auth.transport.requests', 'webview.platforms.edgechromium',
                    'webview.platforms.winforms', 'clr_loader'],
     hookspath=[],
     hooksconfig={},

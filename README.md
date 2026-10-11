@@ -6,7 +6,7 @@ A Windows desktop app for the ISWM Donthali weighbridge. It's built from the Cla
 - **Weighbridge:** serial (COM port) or `socket://ip:port`, with the weight read by a regex and multiplier as in adex_lite. A built-in simulator is available for training.
 - **Cameras:** front and back, each USB, RTSP (Hikvision / Dahua / CP Plus / other) or HTTP. Live preview with zoom. Save stores full-resolution, watermarked photos.
 - **Records:** SQLite. Tickets are `IN{R|C}YYMM####` and `O YYMM####`, from counters that never reset.
-- **Sync:** to Google Cloud Storage in the background. Works offline.
+- **Sync:** records to Google Cloud **Firestore**, batched to use very little internet. Works offline. A shared real-time API is in `cloud_api/`.
 - **Reports:** Daily, Shift, Incomplete, and Hourly/Daily/Weekly/Monthly with CSV download.
 
 ## Install (for anyone)
@@ -19,6 +19,58 @@ A Windows desktop app for the ISWM Donthali weighbridge. It's built from the Cla
 Data (records, photos, settings, logo) is kept in `C:\ProgramData\ISWM`. Back up that folder. Uninstalling the app does not delete it, and installing a newer `ISWM-Setup.exe` over the old one keeps everything.
 
 There's also **ISWM-portable** (a zip). Unzip it anywhere and run `ISWM.exe`. Its data goes in `ISWM_data` next to the exe.
+
+## Very low data use
+
+| | What happens | Data |
+|---|---|---|
+| Cameras | **Off** until needed. They run only while an operator presses **View live** (Alt + V), while the admin preview or a live-view viewer is watching, or briefly after a vehicle is picked so the photo is ready. With a *snapshot endpoint* set, Save asks the camera for one picture and no video stream is opened at all. They stop about 20 seconds after the need ends. | Local network only, never internet |
+| Sync | New records are collected and sent together every 10 minutes (admin can choose right away, or 5 / 15 / 30 / 60 minutes), in one request. **Nothing is sent when nothing is new.** No polling, no keep-alive. When offline, the wait doubles, up to an hour. | About 1 KB per trip |
+| Photos | Stay on the PC by default. Admin can choose *Small* (about 100 KB) or *Full* (about 0.5 MB) upload to a Cloud Storage bucket. | 0 by default |
+| Screens, reports, live view | Run on the PC and the local network | none |
+
+The Sync screen shows when records were last sent, when the next send is, and how much internet the app has used since it started.
+
+## Google Cloud: database and shared API
+
+**Why Firestore.** [Firestore](https://cloud.google.com/firestore) has no server to keep running, so it costs nothing while idle. Its free daily quota (20,000 writes, 50,000 reads, 1 GB stored) covers several plants of a few hundred trips each, and it has real-time updates built in. Cloud SQL would cost about $10–30 a month even when idle.
+
+**Layout.** One project, one tree per site:
+```
+sites/{site_id}                     name, company, last_sync
+sites/{site_id}/entries/{ticket}    each trip: vno, dir, source/waste_type or material/dest,
+                                    gross_kg, tare_kg, net_kg, manual, operator, created_at, ...
+sites/{site_id}/tares/{id}          sites/{site_id}/vehicles/{vehicle}
+sites/{site_id}/batches|samples|corrections/{id}
+```
+Each site keeps its own local database (SQLite) as the source of truth, so the plant works with no internet. To give a site a completely separate Firestore database, create a named database and type its name in *Firestore database*.
+
+**Set up (once, in the Google Cloud console).**
+1. Firestore → *Create database* → Native mode → region `asia-south1` (Mumbai).
+2. IAM → Service accounts → create `iswm-plant` with the role **Cloud Datastore User**. Keys → Add key → JSON. Copy the file to the plant PC, for example `C:\ISWM\key.json`.
+3. In ISWM admin, under *Sync to Google Cloud*: tick **Turn on sync**, give the key file path and a **Site ID** that is different for every site (for example `iswm-donthali`), then **Save settings**. The project is read from the key file.
+4. Only for photo upload: create a Cloud Storage bucket, give the service account **Storage Object Creator** on it, and type the bucket name.
+
+**Shared real-time API (`cloud_api/`).** A small read-only service for [Cloud Run](https://cloud.google.com/run). It scales to zero, so it's free while nobody calls it, and Cloud Run's free tier covers 2 million requests a month.
+
+```bash
+cd cloud_api
+gcloud run deploy iswm-api --source . --region asia-south1 --allow-unauthenticated \
+  --set-env-vars "API_KEYS=office:LONG-RANDOM-KEY-1,dashboard:LONG-RANDOM-KEY-2@iswm-donthali"
+```
+Give the Cloud Run service account the **Cloud Datastore Viewer** role. Then share a key with each consumer:
+
+| Call | Gives |
+|---|---|
+| `GET /v1/sites` | the sites this key can see |
+| `GET /v1/sites/iswm-donthali/entries?from=2026-10-01&to=2026-10-11&vehicle=AP39` | trips with vehicle numbers |
+| `GET /v1/sites/iswm-donthali/summary?date=2026-10-11` | trips and net kg by waste type or material |
+| `GET /v1/sites/iswm-donthali/vehicles` | vehicles and their empty weights |
+| `GET /v1/sites/iswm-donthali/stream` | **live**: an event for each new or changed trip as it arrives (Server-Sent Events) |
+
+Every call needs the header `X-API-Key: <key>`. A key written as `name:key@site1|site2` only sees those sites. `firestore.rules` blocks all direct access, so data is reachable only through the API.
+
+"Real time" means as soon as the plant sends. With the default 10-minute batching, the API is at most about 10 minutes behind. Choose *Right away* in admin for seconds, at the cost of one small request per trip.
 
 ## Where data is kept
 
@@ -55,7 +107,7 @@ Every change keeps the old value. Click a trip to see its photos and its "Change
 
 **Built-in (easiest, same network).** In admin, under *Live view for other computers*, tick **Turn on**, set a viewer password and save. Admin then shows the address, for example `http://192.168.1.20:8090`. Open it in any browser on another PC or phone on the same network, with user `viewer` and the password you set. The page shows both cameras, the live weight and today's trips.
 
-ISWM is the relay, so the cameras are opened only once, by the plant PC, no matter how many people watch. The cameras' own passwords never leave the plant PC. Up to 8 streams at a time, at about 6 pictures a second.
+ISWM is the relay, so the cameras are opened only once, by the plant PC, no matter how many people watch, and only while someone is watching. The cameras' own passwords never leave the plant PC. Up to 8 streams at a time, at about 6 pictures a second.
 
 The installer allows this through the Windows firewall on **private** networks only. If the PC's network is set to *Public*, change it to *Private* in Windows network settings.
 
@@ -154,7 +206,8 @@ python -m pytest -q tests
 | `iswm/db.py` | SQLite schema, tickets, tare/complete rules, recovery batches, sync queue, reports |
 | `iswm/weighbridge.py` | Serial reader (adapted from adex_lite), stability check, simulator |
 | `iswm/cameras.py` | OpenCV capture threads, watermark (from adex_lite), snapshot |
-| `iswm/cloud.py` | Google Cloud Storage uploader (bucket layout from adex_lite) |
+| `iswm/cloud.py` | Batched Firestore sync (REST, no background traffic), optional photo upload |
+| `cloud_api/` | Shared read-only real-time API for Cloud Run, plus Firestore rules |
 | `iswm/service.py` | One method per UI action |
 | `iswm/server.py` | Local HTTP server on 127.0.0.1 with a per-launch token, camera MJPEG streams |
 | `iswm/main.py` | Starts everything and opens the pywebview window |
