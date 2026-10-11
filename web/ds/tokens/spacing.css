@@ -1,0 +1,33 @@
+/* Tharuni Associates — spacing, radii, shadows, motion */
+:root {
+  /* Spacing — 4px base */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+  --space-9: 96px;
+  --space-10: 128px;
+
+  /* Radii — soft, organic (echoes the circular logo) */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --radius-xl: 24px;
+  --radius-pill: 999px;
+
+  /* Shadows — soft, diffuse, never harsh */
+  --shadow-sm: 0 1px 2px rgba(11, 61, 34, 0.08);
+  --shadow-md: 0 4px 12px rgba(11, 61, 34, 0.10);
+  --shadow-lg: 0 12px 32px rgba(11, 61, 34, 0.14);
+  --shadow-card: 0 1px 2px rgba(11, 61, 34, 0.06), 0 6px 20px rgba(11, 61, 34, 0.08);
+
+  /* Motion — calm, Apple-like */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1); /* @kind other */
+  --duration-fast: 150ms; /* @kind other */
+  --duration-base: 250ms; /* @kind other */
+  --duration-slow: 450ms; /* @kind other */
+}

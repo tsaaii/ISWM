@@ -1,0 +1,6 @@
+ISWM_data/
+build/
+dist/
+__pycache__/
+*.pyc
+.pytest_cache/

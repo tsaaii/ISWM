@@ -1,0 +1,65 @@
+/* Tharuni Associates — color tokens */
+:root {
+  /* Base palette — drawn from the Tharuni logo */
+  --green-900: #0B3D22;
+  --green-800: #0E5230;
+  --green-700: #0F7A3E;
+  --green-600: #0FA14E; /* logo primary green */
+  --green-500: #17B45C;
+  --green-400: #57C97F;
+  --green-300: #7ED356; /* logo leaf green */
+  --green-200: #BFEBC9;
+  --green-100: #E4F6E9;
+  --green-050: #F2FBF4;
+
+  /* Sky — secondary accent (air, water, sky) */
+  --sky-600: #2380B8;
+  --sky-400: #6FB8DE;
+  --sky-100: #E7F3FA;
+
+  /* Earth neutrals — warm greys grounded in soil tones */
+  --ink-900: #121A14;   /* near-black with a green cast (logo wordmark) */
+  --ink-700: #33413A;
+  --ink-500: #5C6B62;
+  --ink-300: #9AA79F;
+  --ink-200: #CBD4CE;
+  --ink-100: #E8EDEA;
+  --ink-050: #F5F7F5;
+  --white: #FFFFFF;
+
+  /* Semantic */
+  --amber-600: #C77D1B;
+  --amber-100: #FBF0DD;
+  --red-600: #C2402F;
+  --red-100: #FAE8E4;
+
+  /* Semantic aliases */
+  --brand: var(--green-600);
+  --brand-strong: var(--green-700);
+  --brand-deep: var(--green-900);
+  --brand-leaf: var(--green-300);
+  --accent-sky: var(--sky-600);
+
+  --text-heading: var(--ink-900);
+  --text-body: var(--ink-700);
+  --text-muted: var(--ink-500);
+  --text-on-brand: var(--white);
+  --text-link: var(--green-700);
+  --text-link-hover: var(--green-900);
+
+  --surface-page: var(--white);
+  --surface-subtle: var(--green-050);
+  --surface-card: var(--white);
+  --surface-brand: var(--green-600);
+  --surface-deep: var(--green-900);
+
+  --border-default: var(--ink-200);
+  --border-subtle: var(--ink-100);
+  --border-brand: var(--green-600);
+
+  --state-success: var(--green-600);
+  --state-warning: var(--amber-600);
+  --state-danger: var(--red-600);
+
+  --focus-ring: 0 0 0 3px rgba(15, 161, 78, 0.30);
+}

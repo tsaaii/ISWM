@@ -1,0 +1,17 @@
+/* Tharuni Associates — base element styles */
+body {
+  font-family: var(--font-body);
+  color: var(--text-body);
+  background: var(--surface-page);
+  line-height: var(--leading-body);
+  -webkit-font-smoothing: antialiased;
+}
+h1, h2, h3, h4 {
+  font-family: var(--font-display);
+  color: var(--text-heading);
+  letter-spacing: var(--tracking-display);
+  line-height: var(--leading-snug);
+}
+a { color: var(--text-link); text-decoration-color: var(--green-300); }
+a:hover { color: var(--text-link-hover); }
+::selection { background: var(--green-200); }
