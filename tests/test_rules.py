@@ -382,25 +382,18 @@ def test_live_view_needs_password(tmp_path, monkeypatch):
         svc.liveview.stop()
 
 
-def test_window_falls_back_instead_of_crashing(tmp_path, monkeypatch):
-    """If the app window can't open (e.g. pythonnet blocked), the app must not crash."""
-    import builtins
+def test_window_opens_in_browser_app_mode_and_single_instance(tmp_path, monkeypatch):
     from iswm import window
     monkeypatch.setenv("ISWM_DATA_DIR", str(tmp_path))
-    real_import = builtins.__import__
-
-    def fake_import(name, *a, **k):
-        if name == "webview":
-            raise RuntimeError("Failed to resolve Python.Runtime.Loader.Initialize")
-        return real_import(name, *a, **k)
-
-    monkeypatch.setattr(builtins, "__import__", fake_import)
+    cmd = window.browser_command("msedge.exe", "http://127.0.0.1:5/index.html#t=x")
+    assert cmd[1] == "--app=http://127.0.0.1:5/index.html#t=x" and cmd[2].startswith("--user-data-dir=")
+    # no browser at all: the default browser opens and the person is told, nothing crashes
     opened, shown = [], []
-    monkeypatch.setattr(window, "open_in_edge", lambda url, title: opened.append(url) or True)
-    svc = Service(Settings(str(tmp_path / "s.json")), DB(str(tmp_path / "d.sqlite3")), start_devices=False)
-    window.run(svc, "http://127.0.0.1:1/index.html#t=x")
-    assert opened == ["http://127.0.0.1:1/index.html#t=x"] and svc.window is None
-    monkeypatch.setattr(window, "open_in_edge", lambda url, title: False)
+    monkeypatch.setattr(window, "find_browser", lambda: None)
+    monkeypatch.setattr(window.webbrowser, "open", lambda u: opened.append(u))
     monkeypatch.setattr(window, "message", lambda text, title="ISWM": shown.append(text))
-    window.run(svc, "http://127.0.0.1:1/index.html#t=x")
-    assert "t=x" in shown[0]
+    svc = Service(Settings(str(tmp_path / "s.json")), DB(str(tmp_path / "d.sqlite3")), start_devices=False)
+    window.run(svc, "http://127.0.0.1:5/index.html#t=x")
+    assert opened and "t=x" in shown[0]
+    a, b = window.SingleInstance(), window.SingleInstance()
+    assert a.acquire() and not b.acquire()

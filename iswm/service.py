@@ -50,7 +50,7 @@ class Service:
         self.operator = None
         self._admin_until = 0.0
         self._fails = {}
-        self.window = None  # set by main.py when running in a pywebview window
+        self.window = None  # kept for compatibility; the window is an Edge app window (see window.py)
         self._full = False
         self.maint = Maintenance(self)
         self.liveview = LiveView(self)

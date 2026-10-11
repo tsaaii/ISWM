@@ -2,8 +2,8 @@
 
     ISWM.exe                 normal start, opens the app window
     ISWM.exe --browser       no window; prints a URL to open in a browser
-                             (for testing on a PC without WebView2)
-    ISWM.exe --check         check that the window parts load (used by the build)
+                             (for testing)
+    ISWM.exe --check         check a browser is available for the window (used by the build)
 """
 import argparse
 import logging
@@ -28,12 +28,26 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="ISWM")
     ap.add_argument("--browser", action="store_true", help="run without a window; open the printed URL")
     ap.add_argument("--port", type=int, default=0)
-    ap.add_argument("--check", action="store_true", help="check the window parts load, write the result to the log, exit")
+    ap.add_argument("--version", action="store_true", help="show the version and exit")
+    ap.add_argument("--check", action="store_true", help="check a browser is available for the window, log the result, exit")
     args = ap.parse_args(argv)
+    if args.version:
+        from . import __version__
+        from .window import message
+        message("ISWM version " + __version__ + "\nWindow: Edge app mode (no .NET)")
+        return
     _log_setup()
+    from . import __version__
+    logging.info("ISWM %s starting", __version__)
     if args.check:
         from .window import self_check
         sys.exit(0 if self_check() else 1)
+
+    from .window import SingleInstance, message
+    lock = SingleInstance()
+    if not lock.acquire():
+        message("ISWM is already open on this computer.")
+        return
 
     from .server import serve
     from .service import Service

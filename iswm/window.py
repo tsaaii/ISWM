@@ -1,42 +1,36 @@
-"""Open the app window, and never fail to show the screens.
+"""Open the app window.
 
-1. Files unzipped from a download carry Windows' "came from the internet" mark
-   (a Zone.Identifier stream). .NET then refuses to load pythonnet's
-   Python.Runtime.dll and pywebview fails with "Failed to resolve
-   Python.Runtime.Loader.Initialize". We remove that mark from our own files
-   before opening the window.
-2. If the pywebview window still cannot open (no .NET, broken WebView2, ...),
-   the same screens open in Microsoft Edge's app mode: a plain window with no
-   address bar, using its own profile so it closes cleanly with the app.
+The screens open in Microsoft Edge's app mode: a plain window with the site
+name in the title bar, no address bar or tabs. Edge is part of Windows 10
+and 11, so nothing extra is installed, and nothing depends on .NET.
+
+(The first versions used pywebview, which needs .NET through pythonnet. On
+some PCs .NET refused to load it: "Failed to resolve
+Python.Runtime.Loader.Initialize". Edge app mode avoids that whole layer.)
+
+The window uses its own Edge profile in the data folder, so it is separate
+from the person's normal browsing, opens with no sign-in or welcome pages,
+and its process ends when the window is closed, which also stops ISWM.
+If neither Edge nor Chrome is found, the default browser is used.
 """
 import ctypes
+import json
 import logging
 import os
 import subprocess
 import sys
 import time
+import webbrowser
 
 from . import paths
 
-
-def unblock_own_files():
-    """Remove the downloaded-from-internet mark from the app's files (Windows only)."""
-    if sys.platform != "win32" or not getattr(sys, "frozen", False):
-        return 0
-    removed = 0
-    for root, _, files in os.walk(paths.resource_dir()):
-        for f in files:
-            try:
-                os.remove(os.path.join(root, f) + ":Zone.Identifier")
-                removed += 1
-            except OSError:
-                pass
-    if removed:
-        logging.info("removed the internet mark from %d files", removed)
-    return removed
+EDGE_ARGS = ["--no-first-run", "--no-default-browser-check", "--disable-sync", "--disable-extensions",
+             "--hide-crash-restore-bubble", "--disable-translate", "--overscroll-history-navigation=0",
+             "--disable-pinch", "--disable-features=Translate,msEdgeSidebarV2,msImplicitSignin,"
+             "msEdgeWelcomePage,msShowFirstRunExperience,EdgeCollections", "--window-size=1400,760"]
 
 
-def find_edge():
+def find_browser():
     names = [r"Microsoft\Edge\Application\msedge.exe", r"Google\Chrome\Application\chrome.exe"]
     roots = [os.environ.get(k) for k in ("ProgramFiles(x86)", "ProgramFiles", "LOCALAPPDATA")]
     for n in names:
@@ -56,50 +50,68 @@ def message(text, title="ISWM"):
     print(text, flush=True)
 
 
-def open_in_edge(url, title):
-    edge = find_edge()
-    if not edge:
-        return False
-    profile = paths.sub("browser-window")
-    args = [edge, "--app=" + url, "--user-data-dir=" + profile, "--no-first-run", "--no-default-browser-check",
-            "--disable-features=Translate,msEdgeSidebarV2", "--window-size=1400,760"]
-    logging.info("opening in Edge app mode")
-    proc = subprocess.Popen(args)
-    proc.wait()  # with its own profile, this process lives until the window is closed
-    return True
-
-
-def self_check():
-    """Load the same parts the window needs (pythonnet + WebView2 support) and log the result."""
-    unblock_own_files()
+def _clean_profile(profile):
+    """Mark the last session as closed normally, so Edge never shows 'Restore pages?'."""
+    pref = os.path.join(profile, "Default", "Preferences")
     try:
-        import clr  # noqa: F401  loads Python.Runtime.dll through .NET
-        if sys.platform == "win32":
-            from webview.platforms import winforms  # noqa: F401
-        logging.info("window check ok")
-        return True
-    except Exception:
-        logging.exception("window check failed")
-        return False
+        with open(pref, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        data.setdefault("profile", {}).update({"exit_type": "Normal", "exited_cleanly": True})
+        with open(pref, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+    except (OSError, ValueError):
+        pass
+
+
+def browser_command(browser, url):
+    profile = paths.sub("browser-window")
+    _clean_profile(profile)
+    return [browser, "--app=" + url, "--user-data-dir=" + profile] + EDGE_ARGS
 
 
 def run(service, url):
     """Show the app. Returns when the window is closed."""
-    title = service.settings.get("site_name") or "ISWM"
-    unblock_own_files()
-    try:
-        import webview
-        window = webview.create_window(title, url, width=1400, height=720, min_size=(1000, 560),
-                                       background_color="#F2FBF4", text_select=False)
-        service.window = window
-        webview.start(private_mode=False)
-        return
-    except Exception:
-        logging.exception("app window could not open; trying Edge app mode")
-        service.window = None
-    if open_in_edge(url, title):
-        return
-    message("ISWM is running, but its window could not open on this PC.\n\n"
-            "Install Microsoft Edge WebView2 (or Microsoft Edge), or open this address in a browser:\n\n"
-            + url + "\n\nClose this box to stop ISWM.")
-    time.sleep(0.5)
+    service.window = None
+    browser = find_browser()
+    if browser:
+        logging.info("opening window with %s", browser)
+        started = time.monotonic()
+        proc = subprocess.Popen(browser_command(browser, url))
+        proc.wait()  # with its own profile this process lives until the window is closed
+        if time.monotonic() - started > 3:
+            return
+        logging.warning("browser window closed at once (code %s); using the default browser", proc.returncode)
+    webbrowser.open(url)
+    message("ISWM is open in your web browser.\n\nKeep this box open while you work. "
+            "Close it to stop ISWM.\n\nIf the page did not open, paste this address into a browser:\n" + url)
+
+
+def self_check():
+    """Used by the build: is there a browser to show the window with?"""
+    b = find_browser()
+    logging.info("window check: %s", b or "no Edge or Chrome found")
+    return bool(b)
+
+
+class SingleInstance:
+    """Only one ISWM per PC: a second start just says it is already open."""
+
+    def __init__(self):
+        self.path = os.path.join(paths.data_dir(), "iswm.lock")
+        self.f = None
+
+    def acquire(self):
+        self.f = open(self.path, "a+")
+        try:
+            if sys.platform == "win32":
+                import msvcrt
+                self.f.seek(0)
+                msvcrt.locking(self.f.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(self.f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError:
+            self.f.close()
+            self.f = None
+            return False

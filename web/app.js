@@ -107,7 +107,7 @@ class App extends React.Component {
     this.clock = setInterval(() => this.forceUpdate(), 1000);
     this.livePoll = setInterval(() => this.pollLive(), 200);
     this.srvPoll = setInterval(() => { if (this.state.loggedIn) this.refresh(); }, 10000);
-    api('boot').then(boot => this.setState({boot, loggedIn: !!boot.operator}, () => this.refresh()))
+    api('boot').then(boot => { document.title = boot.site || 'ISWM'; this.setState({boot, loggedIn: !!boot.operator}, () => this.refresh()); })
       .catch(e => this.setState({bootErr: e.message}));
   }
   componentWillUnmount() {
@@ -484,6 +484,7 @@ ${this.renderHelp()}
     </div>
   </div>
   ${this.state.live.admin && h`<div style=${css('position:absolute;right:16px;bottom:16px;display:flex;gap:8px')}>${this.adminButtons()}</div>`}
+  <div style=${css('position:absolute;left:16px;bottom:10px;font-size:12px;color:var(--ink-500)')}>${'Version ' + boot.version}</div>
 </div>`;
   }
 
