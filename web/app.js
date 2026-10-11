@@ -484,6 +484,7 @@ ${this.renderHelp()}
     </div>
   </div>
   ${this.state.live.admin && h`<div style=${css('position:absolute;right:16px;bottom:16px;display:flex;gap:8px')}>${this.adminButtons()}</div>`}
+  <div style=${css('position:absolute;left:16px;bottom:10px;font-size:12px;color:var(--ink-500)')}>${'Version ' + boot.version}</div>
 </div>`;
   }
 

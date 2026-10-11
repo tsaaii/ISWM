@@ -26,6 +26,10 @@ def fail(why):
     sys.exit(1)
 
 
+for bad in ("pythonnet", "webview", "clr_loader"):
+    if os.path.exists(os.path.join(root, "_internal", bad)):
+        fail("the build still contains %s (the .NET window that fails on some PCs)" % bad)
+
 marked = 0
 for d, _, files in os.walk(root):
     for f in files:

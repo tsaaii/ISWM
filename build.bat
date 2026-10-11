@@ -14,12 +14,20 @@ if not exist ".venv\Scripts\python.exe" (
 set "VPY=.venv\Scripts\python.exe"
 %VPY% --version
 
-%VPY% -m pip install --upgrade pip || goto :fail
-%VPY% -m pip install -r requirements.txt pyinstaller || goto :fail
-%VPY% -m PyInstaller --noconfirm ISWM.spec || goto :fail
+rem Start clean so no file from an older build is left in the output.
+if exist build rmdir /s /q build
+if exist dist rmdir /s /q dist
 
+%VPY% -m pip install --upgrade pip || goto :fail
+rem pywebview / pythonnet are no longer used; remove them if an older build installed them.
+%VPY% -m pip uninstall -y pywebview pythonnet clr_loader >nul 2>&1
+%VPY% -m pip install -r requirements.txt pyinstaller || goto :fail
+%VPY% -m PyInstaller --noconfirm --clean ISWM.spec || goto :fail
+
+for /f %%v in ('%VPY% -c "import iswm; print(iswm.__version__)"') do set "VER=%%v"
 echo.
-echo Done. The app is in dist\ISWM\ISWM.exe
+echo Done. Built ISWM version %VER% in dist\ISWM\ISWM.exe
+echo Copy the WHOLE dist\ISWM folder to the other PC, after deleting the old ISWM folder there.
 pause
 exit /b 0
 

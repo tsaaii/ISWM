@@ -119,7 +119,7 @@ The installer allows this through the Windows firewall on **private** networks o
 
 ISWM shows its screens in a Microsoft Edge **app window**: the site name in the title bar, no address bar or tabs. Edge is part of Windows 10 and 11, so nothing extra is needed. The window uses its own Edge profile in the data folder, so it's kept apart from normal browsing. Closing the window stops ISWM, and starting ISWM a second time just says it's already open.
 
-Earlier versions used a .NET window (pywebview). On some PCs that failed with *"Failed to resolve Python.Runtime.Loader.Initialize"*. From 1.3.1 nothing depends on .NET. If neither Edge nor Chrome is found, ISWM opens in the default browser and shows a small box to keep open while working. `ISWM.exe --check` writes which browser it will use to `logs\iswm.log`.
+Earlier versions used a .NET window (pywebview). On some PCs that failed with *"Failed to resolve Python.Runtime.Loader.Initialize"*. From 1.3.2 nothing depends on .NET. The version is shown at the bottom-left of the sign-in screen, and `ISWM.exe --version` shows it too. If neither Edge nor Chrome is found, ISWM opens in the default browser and shows a small box to keep open while working. `ISWM.exe --check` writes which browser it will use to `logs\iswm.log`.
 
 ## Admin (hidden from operators)
 
