@@ -32,6 +32,22 @@ Only the admin can change:
 
 There are no default passwords or PINs.
 
+## Keyboard only, or mouse only
+
+Everything works with just a keyboard or just a mouse. Press **F1** in the app to see the keys.
+
+| | Keyboard | Mouse only |
+|---|---|---|
+| Sign in | ← → pick your name (the last person is already picked); type the PIN on the number row or number pad. Backspace undoes, Delete clears. | Tap your name, tap the PIN keys |
+| Change screen | Alt + 1 … 6 | Tap the tabs |
+| Vehicle | Just start typing. ↑ ↓ choose, Enter picks | Tap the box and pick from the list, or tap **Type on screen** for a new number |
+| Save | Enter again in the vehicle box once the weight is steady, or Ctrl + S | Tap Save |
+| Inward From / Waste | Alt + R / C, Alt + M / W / D | Tap |
+| Outward | Enter moves Vehicle → Material → Going to; type a material's first letter; Alt + K small scale | Tap |
+| Other boxes and buttons | Tab / Shift + Tab, Enter or Space | Tapping a typing box opens an on-screen keyboard (a number pad for weights) |
+| Close | Esc | × or Cancel |
+| Admin | Ctrl + Shift + A | Tap the site name 5 times |
+
 ## Cameras: getting the clearest picture
 
 Pick **Type → RTSP** and the camera **Brand**. The brand fills in the best endpoints, so you only type the IP, user name and password. Passwords with `@ : / #` work, because they're encoded properly in the address.

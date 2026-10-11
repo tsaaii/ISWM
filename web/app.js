@@ -82,7 +82,8 @@ class App extends React.Component {
       retrying: false, retryMsg: null,
       rep: {view:'daily', period:'Weekly', from: isoDay(monthAgo), to: today, dir:'Both', data:null, msg:null, file:null},
       admin: {open:false, pw:'', err:null, view:null, draft:null, ops:null, newPw:'', newPw2:'', counters:null, msg:null},
-      setup: {site:'', agency:'', pw:'', pw2:'', op:'', pin:'', err:null}
+      setup: {site:'', agency:'', pw:'', pw2:'', op:'', pin:'', err:null},
+      ddIdx: -1, osk: null, oskShift: false, help: false
     };
   }
 
@@ -93,11 +94,14 @@ class App extends React.Component {
     requestAnimationFrame(this.fit); this.fitT = setTimeout(this.fit, 300);
     this.onFs = () => { if (!document.fullscreenElement && !(this.state.boot && this.state.boot.inWindow)) this.setState({full:false}); };
     document.addEventListener('fullscreenchange', this.onFs);
-    this.onKey = e => {
-      if (e.key === 'Escape' && this.state.full) this.toggleFull();
-      if (e.ctrlKey && e.shiftKey && (e.key === 'A' || e.key === 'a') && this.state.boot && !this.state.boot.needsSetup) { e.preventDefault(); this.openAdmin(); }
-    };
+    this.onKey = e => this.handleKey(e);
     window.addEventListener('keydown', this.onKey);
+    this.onPointer = e => { if (!(e.target.closest && e.target.closest('[data-osk]'))) this.lastPointer = Date.now(); };
+    this.onFocusIn = e => this.oskFocus(e.target);
+    this.onFocusOut = () => setTimeout(() => { if (this.state.osk && document.activeElement !== this.oskEl) this.setState({osk:null}); }, 60);
+    document.addEventListener('pointerdown', this.onPointer, true);
+    document.addEventListener('focusin', this.onFocusIn);
+    document.addEventListener('focusout', this.onFocusOut);
     this.clock = setInterval(() => this.forceUpdate(), 1000);
     this.livePoll = setInterval(() => this.pollLive(), 200);
     this.srvPoll = setInterval(() => { if (this.state.loggedIn) this.refresh(); }, 10000);
@@ -106,6 +110,7 @@ class App extends React.Component {
   }
   componentWillUnmount() {
     clearTimeout(this.fitT); window.removeEventListener('resize', this.fit); window.removeEventListener('keydown', this.onKey);
+    document.removeEventListener('pointerdown', this.onPointer, true); document.removeEventListener('focusin', this.onFocusIn); document.removeEventListener('focusout', this.onFocusOut);
     document.removeEventListener('fullscreenchange', this.onFs); clearInterval(this.clock); clearInterval(this.livePoll); clearInterval(this.srvPoll);
   }
   pollLive() {
@@ -150,8 +155,12 @@ class App extends React.Component {
       if (f && f.veh) api('vehicle_picked', {flow:tab, vno:f.veh}).catch(() => {});
       else if (f) api('vehicle_cleared').catch(() => {});
       if (tab === 'rep') this.loadReport();
+      if (f) this.focusField(tab + '-veh');
       this.refresh();
     });
+  }
+  focusField(key) {
+    setTimeout(() => { const el = document.getElementById('fld-' + key); if (el) { this.progFocus = true; el.focus(); this.progFocus = false; } }, 30);
   }
   goTare(vno) { this.setState({tab:'tare', tare:{...blank(), typed:vno, veh:vno}}, () => api('vehicle_picked', {flow:'tare', vno}).catch(() => {})); }
   toggleFull() {
@@ -182,6 +191,7 @@ class App extends React.Component {
         last = r.tare.vno + ' empty weight ' + kg(r.tare.tare_kg) + (p ? ' · ' + p.id + ' complete, waste in ' + kg(p.net_kg) : '') + ' · ' + t;
       }
       this.setState(st => ({[flow]: blank(), last:{...st.last, [flow]: {ok:true, text:last}}, busy:false}));
+      this.focusField(flow + '-veh');
       this.refresh();
     } catch (e) {
       this.setState(st => ({last:{...st.last, [flow]: {ok:false, text:e.message}}, busy:false}));
@@ -212,7 +222,22 @@ class App extends React.Component {
       now: new Date().toLocaleDateString('en-IN',{day:'2-digit', month:'short', year:'numeric'}) + ' · ' + hms()
     };
     const dd = s.dd;
-    const open = key => () => { clearTimeout(this.ddT); this.setState({dd:key}); };
+    const open = key => () => { clearTimeout(this.ddT); this.setState({dd:key, ddIdx:-1}); };
+    // Arrow keys move through an open list, Enter picks; returns true if the key was used.
+    const nav = (e, key, options) => {
+      if (this.anyDialog()) return false;
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        if (dd !== key) return this.setState({dd:key, ddIdx:0}), true;
+        const n = options.length; if (!n) return true;
+        this.setState({ddIdx: ((s.ddIdx < 0 ? (e.key === 'ArrowDown' ? -1 : 0) : s.ddIdx) + (e.key === 'ArrowDown' ? 1 : -1) + n) % n});
+        return true;
+      }
+      if (e.key === 'Escape' && dd === key) { e.stopPropagation(); this.setState({dd:null}); return true; }
+      if (e.key === 'Enter' && dd === key && s.ddIdx >= 0 && options[s.ddIdx]) { e.preventDefault(); options[s.ddIdx].pick(); return true; }
+      return false;
+    };
+    const saveOk = () => !this.work().saveDisabled;
     const close = () => { clearTimeout(this.ddT); this.ddT = setTimeout(() => this.setState({dd:null}), 120); };
     // vehicle options: recent vehicles that can be weighed on this screen
     const withTare = srv.vehicles.filter(v => v.tare != null).map(v => v.vno);
@@ -232,22 +257,40 @@ class App extends React.Component {
     const vehField = {
       code: cd.veh, label: 'Vehicle number', width: flow==='in' ? '290px' : '280px', placeholder: 'Tap to pick or type',
       value: f.typed, readOnly: false, open: dd===flow+'-veh',
-      options: list.map(vno => ({label:vno, sub: allKnown.has(flat(vno)) ? (flow==='tare' && pendV.includes(vno) ? 'waiting' : '') : 'new', bg: f.veh===vno ? 'var(--green-050)' : '#fff',
-        pick: e => { e.preventDefault(); this.setState({dd:null}); this.pick(flow, vno); }})),
+      key: flow + '-veh', options: list.map(vno => ({label:vno, sub: allKnown.has(flat(vno)) ? (flow==='tare' && pendV.includes(vno) ? 'waiting' : '') : 'new', bg: f.veh===vno ? 'var(--green-050)' : '#fff',
+        pick: e => { if (e) e.preventDefault(); this.setState({dd:null}); this.pick(flow, vno); if (flow === 'out') this.focusField('out-mat'); }})),
       onFocus: open(flow+'-veh'), onBlur: close,
-      onChange: e => { const had = !!f.veh; this.setState({dd:flow+'-veh'}); this.setF(flow, {typed:e.target.value.toUpperCase(), veh:null}); if (had) api('vehicle_cleared').catch(() => {}); },
-      onKey: e => { if (e.key === 'Enter' && list.length) { this.setState({dd:null}); this.pick(flow, list[0]); e.target.blur(); } }
+      onChange: e => { const had = !!f.veh; this.setState({dd:flow+'-veh', ddIdx:0}); this.setF(flow, {typed:e.target.value.toUpperCase(), veh:null}); if (had) api('vehicle_cleared').catch(() => {}); },
+      onKey: e => {
+        if (nav(e, flow+'-veh', vehField.options)) return;
+        if (e.key !== 'Enter') return;
+        e.preventDefault();
+        if (!f.veh && list.length) vehField.options[0].pick();
+        else if (f.veh && saveOk()) this.save(flow);   // Enter again saves once the weight is steady
+        else this.setState({dd:null});
+      }
     };
     vehField.noOptions = vehField.options.length === 0;
     k.fields = [vehField];
     if (flow === 'out') {
-      const mf = {code:25, label:'Material', width:'230px', placeholder:'Tap to pick', value: f.material || '', readOnly:true, open: dd==='out-mat',
-        options: MATERIALS.map(m => ({label:m, sub:'', bg: f.material===m ? 'var(--green-050)' : '#fff', pick: e => { e.preventDefault(); this.setState({dd:null}); this.setF('out',{material:m}); }})),
-        onFocus: open('out-mat'), onBlur: close, onChange: () => {}, onKey: () => {}};
+      const mf = {key:'out-mat', code:25, label:'Material', width:'230px', placeholder:'Tap to pick', value: f.material || '', readOnly:true, open: dd==='out-mat',
+        options: MATERIALS.map(m => ({label:m, sub:'', bg: f.material===m ? 'var(--green-050)' : '#fff', pick: e => { if (e) e.preventDefault(); this.setState({dd:null}); this.setF('out',{material:m}); this.focusField('out-dest'); }})),
+        onFocus: open('out-mat'), onBlur: close, onChange: () => {},
+        onKey: e => {
+          if (nav(e, 'out-mat', mf.options)) return;
+          // typing a letter jumps to the first material starting with it
+          const m = e.key.length === 1 && MATERIALS.find(x => x[0].toLowerCase() === e.key.toLowerCase());
+          if (m) { e.preventDefault(); this.setState({dd:'out-mat', ddIdx: MATERIALS.indexOf(m)}); }
+          else if (e.key === 'Enter') { e.preventDefault(); if (f.material) this.focusField('out-dest'); else this.setState({dd:'out-mat', ddIdx:0}); }
+        }};
       const dq = f.dest.trim().toLowerCase();
-      const df = {code:26, label:'Going to', width:'280px', placeholder:'Type or pick', value: f.dest, readOnly:false, open: dd==='out-dest',
-        options: srv.dests.filter(d => !dq || d.toLowerCase().includes(dq)).map(d => ({label:d, sub:'', bg: f.dest===d ? 'var(--green-050)' : '#fff', pick: e => { e.preventDefault(); this.setState({dd:null}); this.setF('out',{dest:d}); }})),
-        onFocus: open('out-dest'), onBlur: close, onChange: e => this.setF('out',{dest:e.target.value}), onKey: e => { if (e.key==='Enter') e.target.blur(); }};
+      const df = {key:'out-dest', code:26, label:'Going to', width:'280px', placeholder:'Type or pick', value: f.dest, readOnly:false, open: dd==='out-dest',
+        options: srv.dests.filter(d => !dq || d.toLowerCase().includes(dq)).map(d => ({label:d, sub:'', bg: f.dest===d ? 'var(--green-050)' : '#fff', pick: e => { if (e) e.preventDefault(); this.setState({dd:null}); this.setF('out',{dest:d}); }})),
+        onFocus: open('out-dest'), onBlur: close, onChange: e => { this.setState({ddIdx:-1}); this.setF('out',{dest:e.target.value}); },
+        onKey: e => {
+          if (nav(e, 'out-dest', df.options)) return;
+          if (e.key === 'Enter') { e.preventDefault(); if (saveOk()) this.save('out'); else this.setState({dd:null}); }
+        }};
       mf.noOptions = false; df.noOptions = false;
       if (!df.options.length) df.open = false;
       k.fields.push(mf, df);
@@ -314,23 +357,91 @@ class App extends React.Component {
 <div data-screen-label="ISWM Plant App" style=${css('width:1366px;height:620px;flex:none;transform:scale(' + scale + ');transform-origin:center;background:#fff;box-shadow:var(--shadow-lg);display:flex;flex-direction:column;position:relative;overflow:hidden;color:var(--ink-700)')}>
 ${s.boot.needsSetup ? this.renderSetup() : s.loggedIn ? this.renderApp() : this.renderLogin()}
 ${this.renderDialogs()}
+${this.renderOsk()}
+${this.renderHelp()}
 </div>
 </div>`;
   }
 
+  loginDefault() {
+    const ops = (this.state.boot && this.state.boot.operators) || [];
+    if (ops.length === 1) return ops[0];
+    let last = null; try { last = localStorage.getItem('iswm-last-op'); } catch (e) {}
+    return ops.includes(last) ? last : null;
+  }
+  loginPick(name) {
+    this.setState(st => ({login:{...st.login, name, err:null}}), () => this.tryPin());
+  }
+  loginKey(key) {
+    this.setState(st => {
+      const pin = st.login.pin, np = key==='C' ? '' : key==='<' ? pin.slice(0,-1) : (pin + key).slice(0,4);
+      return {login:{...st.login, name: st.login.name || this.loginDefault(), pin:np, err:null}};
+    }, () => this.tryPin());
+  }
+  tryPin() {
+    const {name, pin} = this.state.login;
+    if (!name) return this.state.login.pin && this.setState(st => ({login:{...st.login, pin:'', err:'Pick your name first (← → keys or tap it).'}}));
+    if (pin.length !== 4 || this.loggingIn) return;
+    this.loggingIn = true;
+    api('login', {name, pin}).then(() => {
+      try { localStorage.setItem('iswm-last-op', name); } catch (e) {}
+      this.setState(st => ({boot:{...st.boot, operator:name}, loggedIn:true, login:{name:null, pin:'', err:null}, tab:'in'}), () => { this.refresh(); this.focusField('in-veh'); });
+    }).catch(e => this.setState({login:{name, pin:'', err:e.message}})).finally(() => { this.loggingIn = false; });
+  }
+
+  // --- keyboard ---------------------------------------------------------------------
+  anyDialog() { const s = this.state; return s.admin.open || s.corr.open || s.sample.open || s.help; }
+  handleKey(e) {
+    if (!e.isTrusted) return;  // keys sent by the on-screen keyboard
+    const s = this.state;
+    if (s.osk && !['Shift','Control','Alt'].includes(e.key)) this.setState({osk:null});
+    if (!s.boot) return;
+    if (e.ctrlKey && e.shiftKey && (e.key === 'A' || e.key === 'a') && !s.boot.needsSetup) { e.preventDefault(); return this.openAdmin(); }
+    if (e.key === 'F1') { e.preventDefault(); return this.setState({help:!s.help, dd:null}); }
+    if (e.key === 'Escape') {
+      if (s.help) return this.setState({help:false});
+      if (s.admin.open) return this.setState(st => ({admin:{...st.admin, open:false, pw:'', view:null, err:null, msg:null}}));
+      if (s.corr.open) return this.setState(st => ({corr:{...st.corr, open:false}}));
+      if (s.sample.open) return this.setState(st => ({sample:{...st.sample, open:false}}));
+      if (s.dd) return this.setState({dd:null});
+      if (s.full) return this.toggleFull();
+      return;
+    }
+    if (s.boot.needsSetup || this.anyDialog()) return;
+    const inText = e.target && e.target.matches && e.target.matches('input, textarea, select');
+    if (!s.loggedIn) {
+      if (inText) return;
+      const ops = s.boot.operators, digit = /^(Digit|Numpad)([0-9])$/.exec(e.code || '');
+      if (digit || /^[0-9]$/.test(e.key)) { e.preventDefault(); return this.loginKey(digit ? digit[2] : e.key); }
+      if (e.key === 'Backspace') { e.preventDefault(); return this.loginKey('<'); }
+      if (e.key === 'Delete') { e.preventDefault(); return this.loginKey('C'); }
+      if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key) && ops.length) {
+        e.preventDefault();
+        const i = ops.indexOf(s.login.name), step = e.key === 'ArrowLeft' ? -1 : e.key === 'ArrowRight' ? 1 : e.key === 'ArrowUp' ? -3 : 3;
+        const n = i < 0 ? 0 : Math.min(ops.length - 1, Math.max(0, i + step));
+        return this.loginPick(ops[n]);
+      }
+      return;
+    }
+    const tabKey = e.altKey && /^(Digit|Numpad)([1-6])$/.exec(e.code || '');
+    if (tabKey) { e.preventDefault(); return this.goTab(['in','out','rec','tare','sync','rep'][Number(tabKey[2]) - 1]); }
+    const work = ['in','out','tare'].includes(s.tab);
+    if (e.ctrlKey && (e.key === 's' || e.key === 'S')) { e.preventDefault(); if (work && !this.work().saveDisabled) this.save(s.tab); return; }
+    if (e.altKey && s.tab === 'in') {
+      const m = {r:['source','Residential'], c:['source','Commercial'], m:['type','Mixed'], w:['type','Wet'], d:['type','Dry']}[(e.key || '').toLowerCase()];
+      if (m) { e.preventDefault(); return this.setF('in', {[m[0]]: m[1]}); }
+    }
+    if (e.altKey && s.tab === 'out' && (e.key || '').toLowerCase() === 'k') { e.preventDefault(); return this.setF('out', {manual:!s.out.manual}); }
+    if (!inText && work && e.key.length === 1 && /[a-z0-9]/i.test(e.key) && !e.ctrlKey && !e.altKey) {
+      // typing anywhere on a weighing screen goes into the vehicle box
+      this.focusField(s.tab + '-veh');
+    }
+  }
+
   renderLogin() {
-    const s = this.state, L = s.login, boot = s.boot;
-    const tryPin = (name, pin) => {
-      if (!name || pin.length !== 4) return;
-      api('login', {name, pin}).then(() => this.setState(st => ({boot:{...st.boot, operator:name}, loggedIn:true, login:{name:null, pin:'', err:null}, tab:'in'}), () => this.refresh()))
-        .catch(e => this.setState({login:{name, pin:'', err:e.message}}));
-    };
-    const loginNames = boot.operators.map(name => ({name, ...SEL(L.name===name), pick: () => { this.setState({login:{...L, name, err:null}}); tryPin(name, L.pin); }}));
-    const press = key => () => {
-      const pin = L.pin, np = key==='C' ? '' : key==='<' ? pin.slice(0,-1) : (pin + key).slice(0,4);
-      this.setState({login:{...L, pin:np, err:null}});
-      tryPin(L.name, np);
-    };
+    const s = this.state, boot = s.boot, L = {...s.login, name: s.login.name || this.loginDefault()};
+    const loginNames = boot.operators.map(name => ({name, ...SEL(L.name===name), pick: () => this.loginPick(name)}));
+    const press = key => () => this.loginKey(key);
     const keypad = ['1','2','3','4','5','6','7','8','9','C','0','<'].map(x => ({label: x==='C' ? 'Clear' : x==='<' ? '←' : x, press: press(x)}));
     const pinDots = [0,1,2,3].map(i => ({bg: i < L.pin.length ? 'var(--green-700)' : '#fff'}));
     return h`
@@ -339,7 +450,7 @@ ${this.renderDialogs()}
     ${this.logoUrl() && h`<img src=${this.logoUrl()} alt="" style=${css('max-width:260px;max-height:88px;object-fit:contain;align-self:flex-start')} />`}
     <div style=${css('font-size:12px;letter-spacing:0.14em;text-transform:uppercase;font-weight:700;color:var(--green-700)')}>${boot.agency}</div>
     <div onClick=${() => this.secretTap()} style=${css('font-size:52px;line-height:1.08;letter-spacing:-0.015em;color:var(--ink-900);user-select:none')}>${boot.site}.</div>
-    <div style=${css('font-size:22px;line-height:1.4;color:var(--ink-700)')}>Tap your name, then type your 4-number PIN. The shift starts by itself.</div>
+    <div style=${css('font-size:22px;line-height:1.4;color:var(--ink-700)')}>Pick your name, then type your 4-number PIN with the keys or the keyboard. The shift starts by itself.</div>
   </div>
   <div style=${css('display:flex;flex-direction:column;gap:22px;width:420px')}>
     <div style=${css('display:grid;grid-template-columns:repeat(3,1fr);gap:10px')}>
@@ -352,7 +463,7 @@ ${this.renderDialogs()}
       ${keypad.map(k => h`<button key=${k.label} onClick=${k.press} style=${css('height:64px;border-radius:16px;border:2px solid var(--ink-300);background:#fff;font-size:28px;color:var(--ink-900);cursor:pointer')}>${k.label}</button>`)}
     </div>
     <div style=${css('font-size:14px;color:' + (L.err ? '#C62828' : 'var(--ink-700)') + ';text-align:center;font-weight:' + (L.err ? 700 : 400))}>
-      ${L.err ? L.err : boot.operators.length === 0 ? 'No operators yet. Ask the admin to add you.' : !L.name ? 'Tap your name first.' : ' '}
+      ${L.err ? L.err : boot.operators.length === 0 ? 'No operators yet. Ask the admin to add you.' : !L.name ? 'Tap your name first, or use ← → on the keyboard.' : ' '}
     </div>
   </div>
   ${this.state.live.admin && h`<div style=${css('position:absolute;right:16px;bottom:16px;display:flex;gap:8px')}>${this.adminButtons()}</div>`}
@@ -471,11 +582,12 @@ ${s.tab==='sync' && this.renderSync()}
       ${k.fields.map(fd => h`
         <div key=${fd.code} style=${css('position:relative;display:flex;flex-direction:column;gap:6px;width:' + fd.width + ';flex:none;padding:8px 10px;border:2px solid var(--ink-300);border-radius:14px;background:#fff')}>
           <span style=${css('display:flex;align-items:center;gap:8px;font-size:15px;font-weight:700;color:var(--ink-900);white-space:nowrap')}><span style=${css('display:inline-flex;align-items:center;justify-content:center;min-width:30px;height:24px;padding:0 7px;border-radius:999px;background:' + k.cc + ';color:' + k.ccFg + ';font-size:13px')}>${fd.code}</span>${fd.label}</span>
-          <${Input} placeholder=${fd.placeholder} value=${fd.value} readOnly=${fd.readOnly} onChange=${fd.onChange} onFocus=${fd.onFocus} onBlur=${fd.onBlur} onKeyDown=${fd.onKey} inputStyle=${fieldInput} />
+          <${Input} id=${'fld-' + fd.key} data-osk-manual=${fd.readOnly ? undefined : '1'} autoComplete="off" placeholder=${fd.placeholder} value=${fd.value} readOnly=${fd.readOnly} onChange=${fd.onChange} onFocus=${fd.onFocus} onBlur=${fd.onBlur} onKeyDown=${fd.onKey} inputStyle=${fieldInput} />
           ${fd.open && h`
             <div style=${css('position:absolute;left:0;right:0;bottom:calc(100% + 6px);z-index:30;background:#fff;border:2px solid var(--ink-300);border-radius:14px;box-shadow:var(--shadow-lg);padding:6px;display:flex;flex-direction:column;max-height:300px;overflow:auto')}>
-              ${fd.options.map(o => h`
-                <button key=${o.label} onMouseDown=${o.pick} style=${css('display:flex;align-items:baseline;justify-content:space-between;gap:10px;height:48px;flex:none;padding:0 14px;border:none;border-radius:10px;background:' + o.bg + ';cursor:pointer;text-align:left;white-space:nowrap')}>
+              ${!fd.readOnly && h`<button tabIndex=${-1} onMouseDown=${e => { e.preventDefault(); this.oskOpen(document.getElementById('fld-' + fd.key)); }} style=${css('display:flex;align-items:center;gap:8px;height:44px;flex:none;padding:0 12px;margin-bottom:4px;border:2px dashed var(--ink-300);border-radius:10px;background:var(--ink-050);cursor:pointer;font-size:16px;font-weight:700;color:var(--ink-900)')}><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"></rect><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"></path></svg>Type on screen</button>`}
+              ${fd.options.map((o, oi) => h`
+                <button key=${o.label} tabIndex=${-1} onMouseDown=${o.pick} style=${css('display:flex;align-items:center;justify-content:space-between;gap:10px;height:48px;flex:none;padding:0 14px;border:' + (oi === s.ddIdx ? '2px solid #0E5230' : '2px solid transparent') + ';border-radius:10px;background:' + (oi === s.ddIdx ? '#E4F6E9' : o.bg) + ';cursor:pointer;text-align:left;white-space:nowrap')}>
                   <span style=${css('font-size:20px;color:var(--ink-900);letter-spacing:0.02em')}>${o.label}</span>
                   <span style=${css('font-size:13px;color:var(--green-700);font-weight:700')}>${o.sub}</span>
                 </button>`)}
@@ -530,7 +642,7 @@ ${s.tab==='sync' && this.renderSync()}
           </div>
         </div>`}
       <div style=${css('flex:none;width:150px')}>
-        <${Button} size="lg" disabled=${k.saveDisabled} onClick=${k.save} ...${huge}><span style=${css('display:inline-flex;align-items:center;justify-content:center;min-width:34px;height:32px;padding:0 8px;border-radius:999px;background:' + k.cc + ';box-shadow:0 0 0 2px #fff;color:' + k.ccFg + ';font-size:17px')}>${k.saveCode}</span>${k.saveLabel}<//>
+        <${Button} size="lg" disabled=${k.saveDisabled} onClick=${k.save} title="Save (Enter in the vehicle box, or Ctrl+S)" ...${huge}><span style=${css('display:inline-flex;align-items:center;justify-content:center;min-width:34px;height:32px;padding:0 8px;border-radius:999px;background:' + k.cc + ';box-shadow:0 0 0 2px #fff;color:' + k.ccFg + ';font-size:17px')}>${k.saveCode}</span>${k.saveLabel}<//>
       </div>
     </div>
   <//>`}
@@ -882,7 +994,7 @@ ${s.tab==='in' && h`
     <div style=${css('display:flex;flex-wrap:wrap;gap:8px')}>
       ${corrChips.map(c => h`<button key=${c.label} onClick=${() => this.setState(st => ({corr:{...st.corr, reason:c.label, err:null}}))} style=${css('height:42px;padding:0 16px;border-radius:999px;border:2px solid ' + c.border + ';background:' + c.bg + ';font-size:15px;color:' + c.fg + ';cursor:pointer')}>${c.label}</button>`)}
     </div>
-    <${Input} label="What is wrong? (required)" placeholder="Say what should change" value=${C2.reason} onChange=${e => { const val = e.target.value; this.setState(st => ({corr:{...st.corr, reason:val, err:null}})); }} error=${C2.err || undefined} />
+    <${Input} label="What is wrong? (required)" placeholder="Say what should change" autoFocus=${true} onKeyDown=${e => { if (e.key === 'Enter' && C2.reason.trim()) sendCorr(); }} value=${C2.reason} onChange=${e => { const val = e.target.value; this.setState(st => ({corr:{...st.corr, reason:val, err:null}})); }} error=${C2.err || undefined} />
     <div style=${css('display:flex;justify-content:flex-end;gap:10px;margin-top:6px')}>
       <${Button} variant="ghost" onClick=${closeCorr}>Cancel<//>
       <${Button} disabled=${!C2.reason.trim()} onClick=${sendCorr}>Send to admin<//>
@@ -894,7 +1006,7 @@ ${s.tab==='in' && h`
   <div style=${css('display:flex;flex-direction:column;gap:14px')}>
     <span>Weigh one sample of mixed waste on the small scale. Then sort it and weigh each part.</span>
     <div style=${css('display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px')}>
-      ${sampleFields.map(f => h`<${Input} key=${f.x} label=${f.label} type="number" placeholder="0" value=${f.val} onChange=${f.onChange} helper=${f.pct} />`)}
+      ${sampleFields.map((f, i) => h`<${Input} key=${f.x} label=${f.label} type="number" placeholder="0" autoFocus=${i === 0} value=${f.val} onChange=${f.onChange} helper=${f.pct} onKeyDown=${e => { if (e.key === 'Enter') { const next = e.target.closest('[role=dialog]').querySelectorAll('input')[i + 1]; if (next) next.focus(); else if (sk>0 && Number(S.wet)+Number(S.dry)+Number(S.inert) > 0) saveSample(); } }} />`)}
     </div>
     ${S.err && h`<div style=${css('font-size:15px;color:#C62828;font-weight:700')}>${S.err}</div>`}
     <div style=${css('display:flex;justify-content:flex-end;gap:10px;margin-top:6px')}>
@@ -1102,6 +1214,96 @@ ${this.renderAdmin()}
 <//>`;
   }
 
+  // --- on-screen keyboard, for mouse-only (or touch) use ------------------------------
+  // Opens when a text box is clicked with the mouse; closes as soon as a real key is pressed.
+  oskFocus(el) {
+    if (this.progFocus || !el || !el.matches) return;
+    const ok = el.matches('input:not([readonly]):not([disabled]):not([type=checkbox]):not([type=radio]):not([type=file]):not([type=date]):not([type=time]), textarea');
+    if (!ok || el.dataset.oskManual) return;   // boxes with a pick-list offer "Type on screen" instead
+    if (!this.lastPointer || Date.now() - this.lastPointer > 700) return;
+    this.oskOpen(el);
+  }
+  oskOpen(el) {
+    if (!el) return;
+    if (document.activeElement !== el) el.focus();
+    this.oskEl = el;
+    const r = el.getBoundingClientRect(), box = document.querySelector('[data-screen-label="ISWM Plant App"]');
+    const b = box ? box.getBoundingClientRect() : {left:0, top:0, width:1366, height:620};
+    const k = b.width / 1366 || 1, num = el.type === 'number' || el.inputMode === 'numeric', w = num ? 330 : 860;
+    const cx = (r.left + r.width / 2 - b.left) / k, cy = (r.top + r.height / 2 - b.top) / k;
+    this.setState({osk: {num, w, top: cy > 310, left: Math.round(Math.min(1366 - w - 8, Math.max(8, cx - w / 2)))}});
+  }
+  oskPress(key) {
+    const el = this.oskEl;
+    if (!el || !document.body.contains(el)) return this.setState({osk:null});
+    if (key === 'HIDE') { this.setState({osk:null}); return; }
+    if (key === 'SHIFT') return this.setState(st => ({oskShift: !st.oskShift}));
+    if (key === 'ENTER') {
+      this.setState({osk:null});
+      el.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', code:'Enter', bubbles:true}));
+      return;
+    }
+    const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value').set;
+    const v = el.value || '';
+    let a = v.length, b = v.length;
+    try { if (el.selectionStart != null) { a = el.selectionStart; b = el.selectionEnd; } } catch (e) {}
+    let nv, pos;
+    if (key === 'CLR') { nv = ''; pos = 0; }
+    else if (key === 'BS') { if (a === b && a > 0) a -= 1; nv = v.slice(0, a) + v.slice(b); pos = a; }
+    else {
+      const ch = key === 'SPACE' ? ' ' : this.state.oskShift ? key : key.toLowerCase();
+      if (el.maxLength > 0 && v.length - (b - a) >= el.maxLength) return;
+      nv = v.slice(0, a) + ch + v.slice(b); pos = a + 1;
+    }
+    setter.call(el, nv);
+    el.dispatchEvent(new Event('input', {bubbles:true}));
+    try { el.setSelectionRange(pos, pos); } catch (e) {}
+  }
+  renderOsk() {
+    const o = this.state.osk;
+    if (!o) return null;
+    const keyBtn = (k, label, w, dark) => h`<button key=${k} data-osk="1" tabIndex=${-1}
+      onMouseDown=${e => { e.preventDefault(); this.oskPress(k); }}
+      style=${css('flex:' + (w || 1) + ' 1 0;min-width:0;height:52px;border-radius:12px;border:2px solid ' + (dark ? '#0E5230' : 'var(--ink-300)') + ';background:' + (dark ? '#0E5230' : '#fff') + ';color:' + (dark ? '#fff' : 'var(--ink-900)') + ';font-size:' + (label.length > 2 ? 16 : 22) + 'px;font-weight:700;cursor:pointer;user-select:none')}>${label}</button>`;
+    const row = (keys) => h`<div style=${css('display:flex;gap:6px')}>${keys}</div>`;
+    const sh = this.state.oskShift;
+    const letters = r => r.split('').map(c => keyBtn(c.toUpperCase(), sh ? c.toUpperCase() : c, 1));
+    const body = o.num ? h`
+      ${row(['7','8','9'].map(c => keyBtn(c, c)))}
+      ${row(['4','5','6'].map(c => keyBtn(c, c)))}
+      ${row(['1','2','3'].map(c => keyBtn(c, c)))}
+      ${row([keyBtn('.', '.'), keyBtn('0', '0'), keyBtn('BS', '⌫')])}
+      ${row([keyBtn('CLR', 'Clear'), keyBtn('HIDE', 'Hide'), keyBtn('ENTER', 'OK', 1, true)])}`
+      : h`
+      ${row('1234567890'.split('').map(c => keyBtn(c, c)))}
+      ${row(letters('qwertyuiop'))}
+      ${row([...letters('asdfghjkl'), keyBtn('BS', '⌫', 1.4)])}
+      ${row([keyBtn('SHIFT', sh ? 'abc' : 'ABC', 1.4, sh), ...letters('zxcvbnm'), keyBtn('-', '-'), keyBtn('.', '.')])}
+      ${row([keyBtn('CLR', 'Clear', 1.5), keyBtn('SPACE', 'Space', 5), keyBtn('HIDE', 'Hide', 1.5), keyBtn('ENTER', 'OK', 1.5, true)])}`;
+    return h`<div data-osk="1" onMouseDown=${e => e.preventDefault()} style=${css('position:absolute;left:' + o.left + 'px;' + (o.top ? 'top:72px;' : 'bottom:10px;') + 'width:' + o.w + 'px;box-sizing:border-box;z-index:200;display:flex;flex-direction:column;gap:6px;padding:10px;border-radius:18px;background:#E8EDEA;border:2px solid var(--ink-300);box-shadow:var(--shadow-lg)')}>${body}</div>`;
+  }
+
+  renderHelp() {
+    if (!this.state.help) return null;
+    const rows = [
+      ['Sign in', 'Pick name with ← →, type the PIN on the keyboard or number pad. Backspace undoes, Delete clears.'],
+      ['Change screen', 'Alt + 1 to 6 (1 Inward, 2 Outward, 3 Recovery, 4 Tare, 5 Sync, 6 Reports)'],
+      ['Vehicle', 'Just start typing. ↑ ↓ choose from the list, Enter picks.'],
+      ['Save', 'Press Enter again in the vehicle box when the weight is steady, or Ctrl + S'],
+      ['Inward choices', 'Alt + R Residential, Alt + C Commercial, Alt + M Mixed, Alt + W Wet, Alt + D Dry'],
+      ['Outward', 'Enter moves Vehicle → Material → Going to. In Material, type the first letter. Alt + K small scale.'],
+      ['Everything else', 'Tab moves to the next button or box, Shift + Tab goes back, Enter or Space presses.'],
+      ['Close / cancel', 'Esc closes lists, boxes and full view'],
+      ['Mouse only', 'Click any typing box and an on-screen keyboard appears.'],
+      ['Admin', 'Ctrl + Shift + A, or tap the site name 5 times'],
+    ];
+    return h`<${Dialog} open=${true} title="Keyboard keys" onClose=${() => this.setState({help:false})} width=${760}>
+      <div style=${css('display:grid;grid-template-columns:170px minmax(0,1fr);gap:8px 16px;font-size:16px')}>
+        ${rows.map(([a, b]) => h`<${React.Fragment} key=${a}><b style=${css('color:var(--ink-900)')}>${a}</b><span>${b}</span><//>`)}
+      </div>
+    <//>`;
+  }
+
   // --- first run: set up this computer ------------------------------------------------
   renderSetup() {
     const S = this.state.setup;
@@ -1114,7 +1316,7 @@ ${this.renderAdmin()}
     };
     const field = (label, key, type, hint, extra) => h`<label class="admin-row" style=${{fontSize:'15px'}}>${label}<input type=${type||'text'} value=${S[key]} placeholder=${hint||''} onChange=${e => set({[key]: key==='pin' ? e.target.value.replace(/\D/g,'').slice(0,4) : e.target.value})} style=${{height:'46px', fontSize:'18px'}} ...${extra||{}} /></label>`;
     return h`
-<div data-screen-label="Set up" style=${css('flex:1;display:flex;align-items:center;justify-content:center;gap:72px;padding:40px 56px')}>
+<div data-screen-label="Set up" onKeyDown=${e => { if (e.key === 'Enter' && S.site && S.pw && S.pw2 && S.op && S.pin.length === 4) go(); }} style=${css('flex:1;display:flex;align-items:center;justify-content:center;gap:72px;padding:40px 56px')}>
   <div style=${css('display:flex;flex-direction:column;gap:16px;max-width:400px')}>
     <div style=${css('font-size:12px;letter-spacing:0.14em;text-transform:uppercase;font-weight:700;color:var(--green-700)')}>First time on this computer</div>
     <div style=${css('font-size:48px;line-height:1.08;letter-spacing:-0.015em;color:var(--ink-900)')}>Set up the plant.</div>
