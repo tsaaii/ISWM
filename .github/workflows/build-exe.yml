@@ -30,15 +30,24 @@ jobs:
       - name: Check the built exe starts
         shell: pwsh
         run: |
+          $log = "dist/ISWM/ISWM_data/logs/iswm.log"
+          function Show-Log($why) {
+            Write-Output "::error::$why"
+            if (Test-Path $log) { Get-Content $log | Select-Object -Last 15 | ForEach-Object { Write-Output "::error::LOG $_" } }
+            else { Write-Output "::error::no log file at $log" }
+            $cl = "dist/ISWM/ISWM_data/logs/console.log"
+            if (Test-Path $cl) { Get-Content $cl | Select-Object -Last 15 | ForEach-Object { Write-Output "::error::CONSOLE $_" } }
+            exit 1
+          }
           Get-ChildItem -Recurse dist/ISWM -File | ForEach-Object { Set-Content -Path ($_.FullName + ":Zone.Identifier") -Value "[ZoneTransfer]`r`nZoneId=3" }
           $c = Start-Process dist/ISWM/ISWM.exe -ArgumentList "--check" -Wait -PassThru
-          Get-Content dist/ISWM/ISWM_data/logs/iswm.log
-          if ($c.ExitCode -ne 0) { throw "no browser for the window" }
+          if ($c.ExitCode -ne 0) { Show-Log "check failed with exit code $($c.ExitCode)" }
           $p = Start-Process dist/ISWM/ISWM.exe -ArgumentList "--browser" -PassThru
           Start-Sleep 15
-          $ok = Select-String -Path dist/ISWM/ISWM_data/logs/iswm.log -Pattern "serving"
-          Stop-Process $p -Force
-          if (-not $ok) { throw "app did not start" }
+          $ok = (Test-Path $log) -and (Select-String -Path $log -Pattern "serving" -Quiet)
+          Stop-Process $p -Force -ErrorAction SilentlyContinue
+          if (-not $ok) { Show-Log "app did not start" }
+          Get-Content $log
           Start-Sleep 2
           Remove-Item -Recurse -Force dist/ISWM/ISWM_data
 
