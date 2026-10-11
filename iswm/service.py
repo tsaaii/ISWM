@@ -19,6 +19,8 @@ from .cloud import CloudSync
 from .db import DB, MATERIALS, RECYC, IN_TYPES, RuleError, norm_vno, yymm
 from .settings import (BRANDS, Settings, check_pin, hash_password, hash_pin, password_problem,
                        pin_problem)
+from .liveview import LiveView, lan_addresses
+from .maintenance import Maintenance
 from .weighbridge import Weighbridge, list_ports
 
 ADMIN_TTL_S = 15 * 60
@@ -39,8 +41,9 @@ def parse_day(s):
 
 class Service:
     def __init__(self, settings=None, database=None, start_devices=True):
-        self.settings = settings or Settings()
         self.db = database or DB()
+        self.settings = settings or Settings(store=self.db)
+        self.db_ok = self.db.integrity_ok()
         self.wb = Weighbridge(self.settings.get("weighbridge"))
         self.cams = Cameras(self.settings.get("cameras"))
         self.cloud = CloudSync(self.db, self.settings)
@@ -49,12 +52,18 @@ class Service:
         self._fails = {}
         self.window = None  # set by main.py when running in a pywebview window
         self._full = False
+        self.maint = Maintenance(self)
+        self.liveview = LiveView(self)
         if start_devices:
             self.wb.start()
             self.cams.start()
             self.cloud.start()
+            self.maint.start()
+            self.liveview.apply()
 
     def shutdown(self):
+        self.liveview.stop()
+        self.maint.stop()
         self.wb.stop()
         self.cams.stop()
         self.cloud.stop()
@@ -233,7 +242,35 @@ class Service:
         self.settings.replace("shifts", {"count": count, "starts": starts})
         return self.settings.get("shifts")
 
-    def report(self, view, day=None, period=None, dateFrom=None, dateTo=None, dir="Both"):
+    @staticmethod
+    def _trip_row(r):
+        return {"id": r["id"], "dir": r["dir"], "vno": r["vno"], "day": r["created_at"][:10],
+                "time": r["created_at"][11:16], "what": r["waste_type"] if r["dir"] == "in" else r["material"],
+                "where": r["source"] if r["dir"] == "in" else r["dest"], "gross": r["gross_kg"], "tare": r["tare_kg"],
+                "net": r["net_kg"], "manual": bool(r["manual"]), "operator": r["operator"],
+                "asked": r.get("asked"), "edits": r.get("edits", 0), "source": r["source"],
+                "waste_type": r["waste_type"], "material": r["material"], "dest": r["dest"]}
+
+    def export_trips(self, dateFrom, dateTo, dir="Both", status="All", q=""):
+        rows = self.db.trips(parse_day(dateFrom), parse_day(dateTo), dir, status, q, limit=1000000)
+        site = self.settings.get("site_name").replace(" ", "-")
+        path = os.path.join(self.reports_folder(), "%s-trips-%s-to-%s.csv" % (site, dateFrom, dateTo))
+        cols = [("Date", lambda r: r["created_at"][:10]), ("Time", lambda r: r["created_at"][11:16]),
+                ("Ticket", lambda r: r["id"]), ("In/Out", lambda r: "Inward" if r["dir"] == "in" else "Outward"),
+                ("Vehicle", lambda r: r["vno"]), ("From / Going to", lambda r: r["source"] or r["dest"]),
+                ("Waste / Material", lambda r: r["waste_type"] or r["material"]),
+                ("Gross kg", lambda r: r["gross_kg"]), ("Tare kg", lambda r: r["tare_kg"]),
+                ("Net kg", lambda r: r["net_kg"]), ("Status", lambda r: "Complete" if r["net_kg"] is not None else "Tare pending"),
+                ("Manual", lambda r: "Yes" if r["manual"] else ""), ("Operator", lambda r: r["operator"]),
+                ("Fixed by admin", lambda r: "Yes" if r.get("edits") else "")]
+        with open(path, "w", newline="", encoding="utf-8-sig") as f:
+            w = csv.writer(f)
+            w.writerow([c[0] for c in cols])
+            for r in rows:
+                w.writerow([cell(c[1](r)) for c in cols])
+        return {"path": path, "folder": os.path.dirname(path)}
+
+    def report(self, view, day=None, period=None, dateFrom=None, dateTo=None, dir="Both", status=None, q=None):
         d = parse_day(day) if day else dt.date.today()
         if view == "daily":
             return self.db.report_daily(d)
@@ -243,6 +280,10 @@ class Service:
         if view == "inc":
             return {"rows": [{"id": r["id"], "vno": r["vno"], "gross": r["gross_kg"],
                               "time": r["created_at"][:16]} for r in self.db.report_incomplete()]}
+        if view == "trips":
+            rows = self.db.trips(parse_day(dateFrom) if dateFrom else d, parse_day(dateTo) if dateTo else d,
+                                 dir, status or "All", q or "")
+            return {"rows": [self._trip_row(r) for r in rows], "limited": len(rows) >= 2000}
         if view == "custom":
             return {"rows": self.db.report_custom(period, parse_day(dateFrom), parse_day(dateTo), dir)}
         raise RuleError("Unknown report.")
@@ -376,17 +417,63 @@ class Service:
             raise RuleError("Admin is locked. Open admin again with the admin password.")
         self._admin_until = time.monotonic() + ADMIN_TTL_S
 
+    def admin_fix_entry(self, id, changes, reason):
+        self._admin()
+        e = self.db.fix_entry(id, changes, reason)
+        self.cloud.kick()
+        return {"entry": e}
+
+    def admin_rename_vehicle(self, old, new, reason):
+        self._admin()
+        r = self.db.rename_vehicle(old, new, reason)
+        self.cloud.kick()
+        return r
+
+    def photo_path(self, entry_id, which):
+        """Saved photo of an entry or tare record, if it is still on this PC."""
+        if which not in ("front", "back"):
+            return None
+        r = self.db.entry(entry_id) or self.db.one("SELECT * FROM tares WHERE id=?", (entry_id,))
+        p = r and r.get(which + "_photo")
+        return p if p and os.path.isfile(p) else None
+
+    def entry_history(self, id):
+        return {"edits": self.db.edits(id), "photos": {w: bool(self.photo_path(id, w)) for w in ("front", "back")}}
+
+    def admin_run_cleanup(self):
+        self._admin()
+        return {"report": self.maint.run(), "storage": self.maint.storage()}
+
     def admin_view(self):
         self._admin()
-        return {"settings": self.settings.public(), "ports": list_ports(), "brands": BRANDS,
+        lv = self.settings.get("live_view") or {}
+        return {"storage": self.maint.storage(), "dbOk": self.db_ok, "settingsRecovered": self.settings.recovered,
+                "liveView": {"running": self.liveview.running(), "error": self.liveview.error,
+                             "addresses": lan_addresses(), "port": lv.get("port"), "hasPassword": bool(lv.get("password_hash"))},
+                "vehicles": [v["vno"] for v in self.db.vehicle_list()],"settings": self.settings.public(), "ports": list_ports(), "brands": BRANDS,
                 "counters": {"in": self.db.counter("in"), "out": self.db.counter("out")},
                 "dataFolder": paths.data_dir(), "live": self.live(), "logo": self.logo_version()}
 
-    def admin_save(self, patch, operators=None, adminPassword=None, counters=None):
+    def admin_save(self, patch, operators=None, adminPassword=None, counters=None, liveViewPassword=None):
         self._admin()
         allowed = {"site_name", "agency_name", "weighbridge", "cameras", "cloud", "reports_folder",
-                   "outward_destinations"}
+                   "outward_destinations", "retention", "live_view"}
         patch = {k: v for k, v in (patch or {}).items() if k in allowed}
+        if "retention" in patch:
+            patch["retention"] = {k: max(0, int(patch["retention"].get(k) or 0))
+                                  for k in ("photos_days", "reports_days", "logs_days", "backups_days")}
+        if "live_view" in patch:
+            lv = patch["live_view"]
+            port = int(lv.get("port") or 8090)
+            if not 1024 <= port <= 65535:
+                raise RuleError("Live view port must be between 1024 and 65535.")
+            patch["live_view"] = {"enabled": bool(lv.get("enabled")), "port": port}
+        if liveViewPassword:
+            if len(liveViewPassword) < 6:
+                raise RuleError("Live view password needs at least 6 characters.")
+            if self.settings.check_admin(liveViewPassword):
+                raise RuleError("Live view password must be different from the admin password.")
+            patch.setdefault("live_view", {})["password_hash"] = hash_password(liveViewPassword)
         if adminPassword:
             problem = password_problem(adminPassword)
             if not problem and self.settings.operator_pin_matches(adminPassword):
@@ -433,4 +520,6 @@ class Service:
             self.cams.restart(self.settings.get("cameras"))
         if "cloud" in patch:
             self.cloud.kick()
+        if "live_view" in patch:
+            self.liveview.apply()
         return self.admin_view()

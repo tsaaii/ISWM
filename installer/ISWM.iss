@@ -50,7 +50,13 @@ Name: "{commonstartup}\{#MyAppName}"; Filename: "{app}\ISWM.exe"; Tasks: startup
 
 [Run]
 Filename: "{tmp}\MicrosoftEdgeWebview2Setup.exe"; Parameters: "/silent /install"; StatusMsg: "Installing Microsoft Edge WebView2 (needed to show the screens)..."; Check: NeedsWebView2; Flags: waituntilterminated
+; Live view (off until the admin turns it on) needs incoming connections on private networks only.
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""ISWM live view"""; Flags: runhidden
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""ISWM live view"" dir=in action=allow program=""{app}\ISWM.exe"" enable=yes profile=private"; Flags: runhidden
 Filename: "{app}\ISWM.exe"; Description: "Open ISWM now"; Flags: nowait postinstall skipifsilent
+
+[UninstallRun]
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""ISWM live view"""; Flags: runhidden; RunOnceId: "DelFwRule"
 
 [Code]
 const

@@ -22,7 +22,8 @@ from .db import RuleError
 API = {"boot", "login", "logout", "live", "state", "vehicle_status", "vehicle_picked", "vehicle_cleared",
        "save_in", "save_out", "save_tare", "save_batch", "save_sample", "ask_correction", "retry_sync",
        "set_shifts", "report", "export_csv", "open_folder", "toggle_full", "setup", "admin_login", "admin_view",
-       "admin_save", "admin_lock", "admin_set_logo", "admin_clear_logo"}
+       "admin_save", "admin_lock", "admin_set_logo", "admin_clear_logo", "admin_fix_entry",
+       "admin_rename_vehicle", "admin_run_cleanup", "entry_history", "export_trips"}
 MAX_BODY = 4 * 1024 * 1024
 
 mimetypes.add_type("application/javascript", ".js")
@@ -33,6 +34,27 @@ mimetypes.add_type("image/webp", ".webp")
 class _Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+
+
+def stream_mjpeg(handler, cam, interval=0.08):
+    """Send a camera as a multipart JPEG stream until the viewer leaves or the camera goes quiet."""
+    handler.send_response(200)
+    handler.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+    handler.send_header("Cache-Control", "no-store")
+    handler.send_header("Connection", "close")
+    handler.end_headers()
+    handler.close_connection = True
+    try:
+        last, idle_since = None, time.monotonic()
+        while time.monotonic() - idle_since < 5:  # camera gone: end the stream, the page reconnects
+            jpg = cam.jpeg()
+            if jpg is not None and jpg is not last:
+                handler.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " +
+                                    str(len(jpg)).encode() + b"\r\n\r\n" + jpg + b"\r\n")
+                last, idle_since = jpg, time.monotonic()
+            time.sleep(interval)
+    except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
+        return
 
 
 def make_handler(service, token, log_errors):
@@ -68,6 +90,14 @@ def make_handler(service, token, log_errors):
                 with open(p, "rb") as f:
                     body = f.read()
                 return self._send(200, body, mimetypes.guess_type(p)[0] or "image/png")
+            if url.path.startswith("/photo/"):
+                parts = url.path.split("/")
+                p = service.photo_path(parts[2], parts[3]) if len(parts) == 4 and self._authorised(query) else None
+                if not p:
+                    return self._send(404, b"", "text/plain")
+                with open(p, "rb") as f:
+                    body = f.read()
+                return self._send(200, body, "image/jpeg")
             if url.path.startswith("/cam/"):
                 if not self._authorised(query):
                     return self._send(403, b"{}")
@@ -107,23 +137,7 @@ def make_handler(service, token, log_errors):
             cam = service.cams.cams.get(name)
             if cam is None:
                 return self._send(404, b"{}")
-            self.send_response(200)
-            self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Connection", "close")
-            self.end_headers()
-            self.close_connection = True
-            try:
-                last, idle_since = None, time.monotonic()
-                while time.monotonic() - idle_since < 5:  # camera gone: end the stream, the UI reconnects
-                    jpg = cam.jpeg()
-                    if jpg is not None and jpg is not last:
-                        self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " +
-                                         str(len(jpg)).encode() + b"\r\n\r\n" + jpg + b"\r\n")
-                        last, idle_since = jpg, time.monotonic()
-                    time.sleep(0.08)
-            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
-                return
+            stream_mjpeg(self, cam)
 
     return Handler
 

@@ -80,7 +80,9 @@ class App extends React.Component {
       corr: {open:false, id:null, reason:'', err:null},
       sample: {open:false, kg:'', wet:'', dry:'', inert:'', err:null},
       retrying: false, retryMsg: null,
-      rep: {view:'daily', period:'Weekly', from: isoDay(monthAgo), to: today, dir:'Both', data:null, msg:null, file:null},
+      rep: {view:'daily', period:'Weekly', from: isoDay(monthAgo), to: today, dir:'Both', data:null, msg:null, file:null,
+            tFrom: today, tTo: today, tDir:'Both', tStatus:'All', tQ:''},
+      trip: null,
       admin: {open:false, pw:'', err:null, view:null, draft:null, ops:null, newPw:'', newPw2:'', counters:null, msg:null},
       setup: {site:'', agency:'', pw:'', pw2:'', op:'', pin:'', err:null},
       ddIdx: -1, osk: null, oskShift: false, help: false
@@ -123,10 +125,14 @@ class App extends React.Component {
   }
   loadReport(patch) {
     const RP = {...this.state.rep, ...(patch || {})};
-    const args = RP.view === 'custom' ? {view:'custom', period:RP.period, dateFrom:RP.from, dateTo:RP.to, dir:RP.dir} : {view:RP.view};
+    const today = isoDay(new Date());
+    const args = RP.view === 'custom' ? {view:'custom', period:RP.period, dateFrom:RP.from, dateTo:RP.to, dir:RP.dir}
+      : RP.view === 'trips' ? {view:'trips', dateFrom:RP.tFrom, dateTo:RP.tTo, dir:RP.tDir, status:RP.tStatus, q:RP.tQ}
+      : {view:RP.view};
     const want = JSON.stringify(args);
     this.repWant = want;
-    api('report', args).then(data => { if (this.repWant === want) this.setState(st => ({rep:{...st.rep, data, dataFor:want}})); })
+    const extra = RP.view === 'daily' ? api('report', {view:'trips', dateFrom:today, dateTo:today}) : Promise.resolve(null);
+    Promise.all([api('report', args), extra]).then(([data, trips]) => { if (this.repWant === want) this.setState(st => ({rep:{...st.rep, data: trips ? {...data, trips: trips.rows} : data, dataFor:want}})); })
       .catch(e => this.setState(st => ({rep:{...st.rep, msg:e.message}})));
   }
 
@@ -357,6 +363,7 @@ class App extends React.Component {
 <div data-screen-label="ISWM Plant App" style=${css('width:1366px;height:620px;flex:none;transform:scale(' + scale + ');transform-origin:center;background:#fff;box-shadow:var(--shadow-lg);display:flex;flex-direction:column;position:relative;overflow:hidden;color:var(--ink-700)')}>
 ${s.boot.needsSetup ? this.renderSetup() : s.loggedIn ? this.renderApp() : this.renderLogin()}
 ${this.renderDialogs()}
+${this.renderTrip()}
 ${this.renderOsk()}
 ${this.renderHelp()}
 </div>
@@ -390,7 +397,7 @@ ${this.renderHelp()}
   }
 
   // --- keyboard ---------------------------------------------------------------------
-  anyDialog() { const s = this.state; return s.admin.open || s.corr.open || s.sample.open || s.help; }
+  anyDialog() { const s = this.state; return s.admin.open || s.corr.open || s.sample.open || s.help || s.trip; }
   handleKey(e) {
     if (!e.isTrusted) return;  // keys sent by the on-screen keyboard
     const s = this.state;
@@ -400,6 +407,7 @@ ${this.renderHelp()}
     if (e.key === 'F1') { e.preventDefault(); return this.setState({help:!s.help, dd:null}); }
     if (e.key === 'Escape') {
       if (s.help) return this.setState({help:false});
+      if (s.trip) return this.setState({trip:null});
       if (s.admin.open) return this.setState(st => ({admin:{...st.admin, open:false, pw:'', view:null, err:null, msg:null}}));
       if (s.corr.open) return this.setState(st => ({corr:{...st.corr, open:false}}));
       if (s.sample.open) return this.setState(st => ({sample:{...st.sample, open:false}}));
@@ -775,12 +783,111 @@ ${s.tab==='in' && h`
   }
 
   // --- 6 reports -------------------------------------------------------------
+  // A table of trips with vehicle numbers; click a row for photos, history and (admin) Fix.
+  tripTable(rows, title, footer, limited) {
+    const admin = this.state.live.admin;
+    const cols = 'grid-template-columns:118px 150px minmax(0,1fr) minmax(0,1.3fr) 90px 90px 112px ' + (admin ? '190px' : '120px');
+    const totIn = rows.filter(r => r.dir === 'in' && r.net != null), totOut = rows.filter(r => r.dir === 'out' && r.net != null);
+    const sum = a => a.reduce((x, r) => x + r.net, 0);
+    const open = r => { this.setState({trip:{row:r, edits:null, photos:null, fix:null}}); api('entry_history', {id:r.id}).then(x => this.setState(st => st.trip && st.trip.row.id === r.id ? {trip:{...st.trip, ...x}} : null)).catch(() => {}); };
+    return h`
+    <div style=${css('flex:1;min-height:0;display:flex;flex-direction:column;border:2px solid var(--ink-300);border-radius:18px;overflow:hidden')}>
+      ${title && h`<div style=${css('padding:6px 16px;font-size:17px;font-weight:700;color:var(--ink-900);border-bottom:1px solid var(--ink-200)')}>${title}</div>`}
+      <div style=${css('display:grid;' + cols + ';gap:8px;padding:7px 16px;background:#151515;color:#fff;font-size:14px;font-weight:700')}>
+        <span>When</span><span>Ticket</span><span>Vehicle</span><span>What</span><span style=${css('text-align:right')}>Gross</span><span style=${css('text-align:right')}>Tare</span><span style=${css('text-align:right')}>Net</span><span></span>
+      </div>
+      <div style=${css('flex:1;min-height:0;overflow-y:auto')}>
+        ${rows.map(r => h`
+          <div key=${r.id} role="button" tabIndex=${0} onClick=${() => open(r)} onKeyDown=${e => { if (e.key === 'Enter') open(r); }} style=${css('display:grid;' + cols + ';gap:8px;align-items:center;padding:5px 16px;border-bottom:1px solid var(--ink-200);font-size:16px;color:var(--ink-900);font-variant-numeric:tabular-nums;cursor:pointer')}>
+            <span style=${css('white-space:nowrap')}>${shortDay(r.day) + ' ' + r.time}</span>
+            <span style=${css('font-weight:700;display:flex;align-items:center;gap:6px')}><span style=${css('width:9px;height:9px;border-radius:50%;flex:none;background:' + C[r.dir === 'in' ? 1 : 2])}></span>${r.id}${r.edits > 0 && h`<span title="Fixed by admin — open to see what changed" style=${css('font-size:12px;font-weight:700;padding:0 6px;border-radius:999px;border:1px solid var(--ink-300);color:var(--ink-700)')}>fixed</span>`}</span>
+            <span style=${css('font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis')}>${r.vno}</span>
+            <span style=${css('white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--ink-700)')}>${r.what + (r.where ? (r.dir === 'in' ? ' · ' : ' → ') + r.where : '') + (r.manual ? ' · manual' : '')}</span>
+            <span style=${css('text-align:right')}>${r.gross != null ? fmt(r.gross) : '—'}</span>
+            <span style=${css('text-align:right')}>${r.tare != null ? fmt(r.tare) : '—'}</span>
+            <span style=${css('text-align:right;font-weight:700')}>${r.net != null ? kg(r.net) : h`<span style=${css('padding:1px 8px;border-radius:999px;background:#151515;color:#fff;font-size:13px')}>Pending</span>`}</span>
+            <span style=${css('display:flex;justify-content:flex-end;gap:6px;align-items:center')}>
+              ${r.asked && h`<span title=${'Asked: ' + r.asked} style=${css('padding:2px 8px;border-radius:999px;background:#F2C200;color:#151515;font-size:13px;font-weight:700;white-space:nowrap')}>Asked</span>`}
+              ${r.net == null && r.dir === 'in' && h`<button onClick=${e => { e.stopPropagation(); this.goTare(r.vno); }} style=${css('display:flex;align-items:center;gap:4px;height:32px;padding:0 10px 0 4px;border-radius:999px;border:2px solid #151515;background:#F2C200;color:#151515;font-size:14px;font-weight:700;cursor:pointer;white-space:nowrap')}><span style=${css('display:inline-flex;align-items:center;justify-content:center;min-width:24px;height:24px;border-radius:999px;background:#151515;color:#F2C200;font-size:13px')}>4</span>Weigh</button>`}
+              ${admin && h`<button onClick=${e => { e.stopPropagation(); this.openFix(r); }} style=${css('height:32px;padding:0 12px;border-radius:999px;border:2px solid #151515;background:#fff;font-size:14px;font-weight:700;cursor:pointer')}>Fix</button>`}
+            </span>
+          </div>`)}
+        ${rows.length === 0 && h`<div style=${css('padding:20px;font-size:17px;color:var(--ink-700);text-align:center')}>No trips for this choice.</div>`}
+      </div>
+      <div style=${css('display:flex;align-items:center;gap:16px;padding:7px 16px;border-top:2px solid var(--ink-300);font-size:15px;color:var(--ink-700)')}>
+        ${footer || h`<${React.Fragment}>
+          <span>${rows.length + (rows.length === 1 ? ' trip' : ' trips') + (limited ? ' (first 2000 — narrow the dates)' : '')}</span>
+          <span style=${css('margin-left:auto;color:var(--ink-900)')}><b style=${{color:C[1]}}>Inward</b> ${totIn.length + ' · ' + kg(sum(totIn))}</span>
+          <span style=${css('color:var(--ink-900)')}><b style=${{color:C[2]}}>Outward</b> ${totOut.length + ' · ' + kg(sum(totOut))}</span>
+          <span>Net from complete trips only. Click a trip to see photos.</span><//>`}
+      </div>
+    </div>`;
+  }
+
+  openFix(r) {
+    this.setState({trip:{row:r, edits:null, photos:null, fix:{vno:r.vno, source:r.source || 'Residential', waste_type:r.waste_type || 'Mixed', material:r.material || '', dest:r.dest || '', reason:'', err:null}}});
+  }
+
+  renderTrip() {
+    const T = this.state.trip;
+    if (!T) return null;
+    const r = T.row, F = T.fix, close = () => this.setState({trip:null});
+    const setF = patch => this.setState(st => ({trip:{...st.trip, fix:{...st.trip.fix, ...patch, err:null}}}));
+    const photo = w => '/photo/' + encodeURIComponent(r.id) + '/' + w + '?t=' + encodeURIComponent(TOKEN);
+    if (F) {
+      const chips = (opts, cur, key) => opts.map(o => { const sl = SEL(cur === o); return h`<button key=${o} onClick=${() => setF({[key]:o})} style=${css('height:40px;padding:0 14px;border-radius:999px;border:2px solid ' + sl.border + ';background:' + sl.bg + ';color:' + sl.fg + ';font-size:15px;font-weight:' + sl.weight + ';cursor:pointer')}>${o}</button>`; });
+      const save = () => api('admin_fix_entry', {id:r.id, reason:F.reason, changes: r.dir === 'in' ? {vno:F.vno, source:F.source, waste_type:F.waste_type} : {vno:F.vno, material:F.material, dest:F.dest}})
+        .then(() => { close(); this.refresh(); this.loadReport(); }).catch(e => setF({err:e.message}));
+      return h`<${Dialog} open=${true} title=${'Fix ' + r.id} onClose=${close} width=${620}>
+        <div style=${css('display:flex;flex-direction:column;gap:12px')}>
+          <span>The ticket number stays the same. The old values are kept and shown in this trip's history.${r.asked ? ' Operator asked: “' + r.asked + '”.' : ''}</span>
+          <label class="admin-row">Vehicle number<input value=${F.vno} list="fix-veh" autoFocus=${true} onChange=${e => setF({vno:e.target.value.toUpperCase()})} /></label>
+          <datalist id="fix-veh">${this.state.srv.vehicles.map(v => h`<option key=${v.vno} value=${v.vno} />`)}</datalist>
+          ${r.dir === 'in' ? h`<${React.Fragment}>
+            <div class="admin-row">From<div style=${css('display:flex;gap:6px')}>${chips(['Residential','Commercial'], F.source, 'source')}</div></div>
+            <div class="admin-row">Waste<div style=${css('display:flex;gap:6px')}>${chips(IN_TYPES, F.waste_type, 'waste_type')}</div></div><//>`
+          : h`<${React.Fragment}>
+            <label class="admin-row">Material<select value=${F.material} onChange=${e => setF({material:e.target.value})}>${MATERIALS.map(m => h`<option key=${m} value=${m}>${m}</option>`)}</select></label>
+            <label class="admin-row">Going to<input value=${F.dest} onChange=${e => setF({dest:e.target.value})} /></label><//>`}
+          <label class="admin-row">Why (required)<input value=${F.reason} placeholder=${r.asked || 'For example: operator typed the wrong number'} onChange=${e => setF({reason:e.target.value})} onKeyDown=${e => { if (e.key === 'Enter' && F.reason.trim()) save(); }} /></label>
+          ${F.err && h`<div style=${css('font-size:15px;font-weight:700;color:#C62828')}>${F.err}</div>`}
+          <div style=${css('display:flex;justify-content:flex-end;gap:10px')}>
+            <${Button} variant="ghost" onClick=${close}>Cancel<//>
+            <${Button} disabled=${!F.reason.trim()} onClick=${save}>Save fix<//>
+          </div>
+        </div>
+      <//>`;
+    }
+    const field = (k, v) => h`<${React.Fragment} key=${k}><span style=${css('color:var(--ink-700)')}>${k}</span><b style=${css('color:var(--ink-900)')}>${v == null || v === '' ? '—' : v}</b><//>`;
+    return h`<${Dialog} open=${true} title=${r.id + ' · ' + r.vno} onClose=${close} width=${960}>
+      <div style=${css('display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) 250px;gap:14px;max-height:430px')}>
+        ${['front','back'].map(w => h`<div key=${w} style=${css('border-radius:12px;background:#C9CFCB;aspect-ratio:16/10;overflow:hidden;display:flex;align-items:center;justify-content:center;color:var(--ink-700);font-weight:700')}>
+          ${T.photos && T.photos[w] ? h`<a href=${photo(w)} target="_blank" style=${{width:'100%', height:'100%'}}><img src=${photo(w)} alt=${w} style=${{width:'100%', height:'100%', objectFit:'cover'}} /></a>` : (T.photos ? 'No ' + w + ' photo on this PC' : 'Loading…')}</div>`)}
+        <div style=${css('display:grid;grid-template-columns:auto 1fr;gap:4px 10px;font-size:15px;align-content:start')}>
+          ${field('Date', shortDay(r.day) + ' ' + r.time)}
+          ${field(r.dir === 'in' ? 'From' : 'Going to', r.where)}
+          ${field(r.dir === 'in' ? 'Waste' : 'Material', r.what)}
+          ${field('Gross', r.gross != null ? kg(r.gross) : null)}
+          ${field('Tare', r.tare != null ? kg(r.tare) : null)}
+          ${field('Net', r.net != null ? kg(r.net) : 'Tare pending')}
+          ${field('Operator', r.operator)}
+          ${r.manual && field('Weight', 'Small scale (manual)')}
+        </div>
+      </div>
+      ${T.edits && T.edits.length > 0 && h`<div style=${css('margin-top:12px;font-size:14px;color:var(--ink-700)')}><b style=${css('color:var(--ink-900)')}>Changed by admin: </b>${T.edits.map(e => e.created_at.slice(0, 16) + ' ' + ({vno:'vehicle', waste_type:'waste', source:'from', material:'material', dest:'going to'}[e.field] || e.field) + ' ' + (e.old || '—') + ' → ' + e.new + ' (' + e.reason + ')').join(' · ')}</div>`}
+      <div style=${css('display:flex;justify-content:flex-end;gap:10px;margin-top:12px')}>
+        ${this.state.live.admin && h`<${Button} variant="secondary" onClick=${() => this.openFix(r)}>Fix this trip<//>`}
+        <${Button} onClick=${close}>Close<//>
+      </div>
+    <//>`;
+  }
+
   renderRep() {
     const s = this.state, RP = s.rep, data = RP.data, OR = '#E0620B';
     const pickView = id => { this.setState(st => ({rep:{...st.rep, view:id, data:null, msg:null, file:null}})); this.loadReport({view:id}); };
     const setRep = patch => { this.setState(st => ({rep:{...st.rep, ...patch, msg:null, file:null}})); this.loadReport(patch); };
     const incN = s.srv.pending.length;
-    const repTabs = [['daily',61,'Daily summary'],['shift',62,'Shift summary'],['custom',63,'Hourly, weekly, monthly'],['inc',64,'Incomplete · ' + incN]].map(([id,code,label]) => {
+    const repTabs = [['daily',61,'Daily summary'],['shift',62,'Shift summary'],['custom',63,'By time or vehicle'],['trips',64,incN ? 'Trips · ' + incN + ' incomplete' : 'Trips']].map(([id,code,label]) => {
       const on = RP.view===id;
       return {id, code, label, border: on ? OR : 'var(--ink-300)', bg: on ? OR : '#fff', fg: on ? '#fff' : 'var(--ink-900)', bBg: on ? '#fff' : OR, bFg: on ? OR : '#fff'};
     });
@@ -794,26 +901,29 @@ ${s.tab==='in' && h`
     if (RP.view === 'daily' && data && data.in) {
       const cards = [{n:1, title:'Inward', headBg:C[1], d:data.in}, {n:2, title:'Outward', headBg:C[2], d:data.out}];
       body = h`
-    <div style=${css('flex:1;min-height:0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px')}>
-      ${cards.map(c => h`
-        <div key=${c.n} style=${css('display:flex;flex-direction:column;border:2px solid var(--ink-300);border-radius:18px;overflow:hidden;min-height:0')}>
-          <div style=${css('display:flex;align-items:center;gap:16px;padding:10px 16px;background:' + c.headBg + ';color:#fff')}>
+    <${React.Fragment}>
+    <div style=${css('flex:none;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px')}>
+      ${cards.map(c => { const rows = c.d.rows.filter(r => r.trips || r.inc); return h`
+        <div key=${c.n} style=${css('display:flex;flex-direction:column;border:2px solid var(--ink-300);border-radius:18px;overflow:hidden')}>
+          <div style=${css('display:flex;align-items:center;gap:16px;padding:8px 16px;background:' + c.headBg + ';color:#fff')}>
             <span style=${css('display:inline-flex;align-items:center;justify-content:center;min-width:28px;height:26px;padding:0 7px;border-radius:999px;background:#fff;color:' + c.headBg + ';font-weight:700;font-size:13px')}>${c.n}</span>
             <span style=${css('font-size:20px;font-weight:700')}>${c.title}</span>
             <span style=${css('margin-left:auto;display:flex;align-items:baseline;gap:16px;white-space:nowrap')}><span style=${css('font-size:16px')}>${tripsTxt(c.d.total.trips)}</span>${c.d.total.inc>0 && h`<span style=${css('font-size:14px;padding:2px 10px;border-radius:999px;background:#fff;color:#151515;font-weight:700')}>${c.d.total.inc + ' incomplete'}</span>`}<span style=${css('font-size:26px;font-weight:700')}>${kg(c.d.total.net)}</span></span>
           </div>
-          <div style=${css('display:grid;grid-template-columns:minmax(0,1fr) 64px 104px 120px;gap:8px;padding:6px 16px;background:var(--ink-100);font-size:13px;letter-spacing:0.14em;text-transform:uppercase;font-weight:700;color:var(--ink-700)')}><span>Material</span><span style=${css('text-align:right')}>Trips</span><span style=${css('text-align:right')}>Incomplete</span><span style=${css('text-align:right')}>Net</span></div>
-          <div style=${css('flex:1;min-height:0;overflow-y:auto')}>
-            ${c.d.rows.map(r => h`
-              <div key=${r.label} style=${css('display:grid;grid-template-columns:minmax(0,1fr) 64px 104px 120px;gap:8px;align-items:center;padding:6px 16px;border-bottom:1px solid var(--ink-200)')}>
-                <span style=${css('font-size:18px;color:var(--ink-900)')}>${r.label}</span>
-                <span style=${css('font-size:18px;color:var(--ink-900);text-align:right;font-variant-numeric:tabular-nums')}>${r.trips || '—'}</span>
-                <span style=${css('text-align:right')}>${r.inc>0 && h`<span style=${css('padding:2px 10px;border-radius:999px;background:#151515;color:#fff;font-size:14px;font-weight:700')}>${r.inc}</span>`}</span>
-                <span style=${css('font-size:18px;color:var(--ink-900);text-align:right;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap')}>${netTxt(r.net, r.trips)}</span>
+          <div style=${css('max-height:132px;overflow-y:auto')}>
+            ${rows.map(r => h`
+              <div key=${r.label} style=${css('display:grid;grid-template-columns:minmax(0,1fr) 80px 110px 120px;gap:8px;align-items:center;padding:4px 16px;border-bottom:1px solid var(--ink-200)')}>
+                <span style=${css('font-size:17px;color:var(--ink-900)')}>${r.label}</span>
+                <span style=${css('font-size:16px;color:var(--ink-700);text-align:right')}>${tripsTxt(r.trips)}</span>
+                <span style=${css('text-align:right')}>${r.inc>0 && h`<span style=${css('padding:1px 9px;border-radius:999px;background:#151515;color:#fff;font-size:13px;font-weight:700')}>${r.inc + ' incomplete'}</span>`}</span>
+                <span style=${css('font-size:17px;color:var(--ink-900);text-align:right;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap')}>${netTxt(r.net, r.trips)}</span>
               </div>`)}
+            ${rows.length === 0 && h`<div style=${css('padding:10px 16px;font-size:16px;color:var(--ink-700)')}>No trips yet today.</div>`}
           </div>
-        </div>`)}
-    </div>`;
+        </div>`; })}
+    </div>
+    ${this.tripTable(data.trips || [], 'Today\'s trips')}
+    <//>`;
     } else if (RP.view === 'shift' && data && data.shifts) {
       const SH = data.shifts, starts = SH.starts.slice(0, SH.count);
       const saveShifts = v => api('set_shifts', v).then(() => this.loadReport()).catch(e => this.setState(st => ({rep:{...st.rep, msg:e.message}})));
@@ -841,37 +951,44 @@ ${s.tab==='in' && h`
       </div>
     </div>
     <//>`;
-    } else if (RP.view === 'inc' && data && data.rows) {
-      const cols = 'grid-template-columns:150px minmax(0,1fr) 150px 120px 120px 190px';
+    } else if (RP.view === 'trips') {
+      const rows = (data && data.rows) || [];
+      const setT = patch => setRep(patch);
+      const download = () => api('export_trips', {dateFrom:RP.tFrom, dateTo:RP.tTo, dir:RP.tDir, status:RP.tStatus, q:RP.tQ})
+        .then(r => this.setState(st => ({rep:{...st.rep, file:r, msg:null}}))).catch(e => this.setState(st => ({rep:{...st.rep, msg:e.message}})));
+      const tDate = (val, key) => h`<input type="date" value=${val} onChange=${e => setT({[key]:e.target.value})} style=${css('height:40px;padding:0 10px;border-radius:10px;border:2px solid var(--ink-300);font-family:var(--font-body);font-size:16px;color:var(--ink-900)')} />`;
+      const statuses = [['All','All'], ['Complete','Done'], ['Incomplete','Pending · ' + incN], ['Asked','Asked']];
       body = h`
     <${React.Fragment}>
-    <div style=${css('font-size:16px;color:var(--ink-900)')}>A record is complete when it has both gross and tare. These still need an empty weight, so their net is not counted in any summary.</div>
-    <div style=${css('flex:1;min-height:0;display:flex;flex-direction:column;border:2px solid var(--ink-300);border-radius:18px;overflow:hidden')}>
-      <div style=${css('display:grid;' + cols + ';gap:8px;padding:8px 16px;background:#151515;color:#fff;font-size:15px;font-weight:700')}>
-        <span>Ticket</span><span>Vehicle</span><span>In at</span><span style=${css('text-align:right')}>Gross</span><span style=${css('text-align:right')}>Tare</span><span></span>
+    <div style=${css('display:flex;align-items:stretch;gap:10px')}>
+      ${box(66, 'From', tDate(RP.tFrom, 'tFrom'))}
+      ${box(67, 'To', tDate(RP.tTo, 'tTo'))}
+      ${box(68, 'Show', h`<div style=${css('display:flex;gap:6px')}>${['Both','Inward','Outward'].map(o => segBtn(o, RP.tDir===o, () => setT({tDir:o})))}</div>`)}
+      <div style=${css('display:flex;flex-direction:column;gap:6px;padding:8px 10px;border:2px solid var(--ink-300);border-radius:14px')}>
+        <span style=${css('font-size:14px;font-weight:700;color:var(--ink-900)')}>Status</span>
+        <div style=${css('display:flex;gap:6px')}>${statuses.map(([v, l]) => segBtn(l, RP.tStatus===v, () => setT({tStatus:v})))}</div>
       </div>
-      <div style=${css('flex:1;min-height:0;overflow-y:auto')}>
-        ${data.rows.map(r => h`
-          <div key=${r.id} style=${css('display:grid;' + cols + ';gap:8px;align-items:center;padding:8px 16px;border-bottom:1px solid var(--ink-200);font-size:17px;color:var(--ink-900);font-variant-numeric:tabular-nums')}>
-            <span style=${css('font-weight:700')}>${r.id}</span><span>${r.vno}</span><span>${shortDay(r.time.slice(0,10)) + ' ' + r.time.slice(11)}</span><span style=${css('text-align:right;font-weight:700')}>${kg(r.gross)}</span>
-            <span style=${css('justify-self:end;padding:2px 10px;border-radius:999px;background:#151515;color:#fff;font-size:14px;font-weight:700')}>Pending</span>
-            <button onClick=${() => this.goTare(r.vno)} style=${css('justify-self:end;display:flex;align-items:center;gap:6px;height:40px;padding:0 14px 0 5px;border-radius:999px;border:2px solid #151515;background:#F2C200;color:#151515;font-size:15px;font-weight:700;cursor:pointer;white-space:nowrap')}><span style=${css('display:inline-flex;align-items:center;justify-content:center;min-width:28px;height:28px;border-radius:999px;background:#151515;color:#F2C200;font-size:14px')}>4</span>Weigh empty</button>
-          </div>`)}
-        ${data.rows.length===0 && h`<div style=${css('padding:24px;font-size:18px;color:var(--ink-700);text-align:center')}>All records are complete.</div>`}
+      <div style=${css('display:flex;flex-direction:column;gap:6px;padding:8px 10px;border:2px solid var(--ink-300);border-radius:14px;flex:1;min-width:120px')}>
+        <span style=${css('font-size:14px;font-weight:700;color:var(--ink-900);white-space:nowrap')}>Vehicle or ticket</span>
+        <input value=${RP.tQ} placeholder="Search" onChange=${e => setT({tQ:e.target.value})} style=${css('height:40px;padding:0 10px;border-radius:10px;border:2px solid var(--ink-300);font-family:var(--font-body);font-size:16px;color:var(--ink-900);width:100%;box-sizing:border-box')} />
+      </div>
+      <div style=${css('display:flex;align-items:flex-end')}>
+        <${Button} onClick=${download} title="Download these trips as a CSV file for Excel" style=${{whiteSpace:'nowrap', padding:'10px 14px'}}><span style=${css('display:inline-flex;align-items:center;justify-content:center;min-width:32px;height:30px;padding:0 7px;border-radius:999px;background:#E0620B;box-shadow:0 0 0 2px #fff;color:#fff;font-size:15px')}>69</span>Download<//>
       </div>
     </div>
+    ${this.tripTable(rows, null, RP.file ? h`<${React.Fragment}><span style=${css('color:var(--green-700);font-weight:700;flex:none')}>Saved.</span><span style=${css('flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis')}>${RP.file.path}</span><button onClick=${() => api('open_folder', {path:RP.file.folder}).catch(() => {})} style=${css('flex:none;height:32px;padding:0 14px;border-radius:999px;border:2px solid var(--green-600);background:#fff;color:var(--green-700);font-size:14px;font-weight:700;cursor:pointer')}>Open folder</button><//>` : null, data && data.limited)}
     <//>`;
     } else if (RP.view === 'custom') {
       const rows = (data && data.rows) || [];
       const showIn = RP.dir!=='Outward', showOut = RP.dir!=='Inward';
-      const head = RP.period==='Hourly' ? 'Hour' : RP.period==='Daily' ? 'Day' : RP.period==='Weekly' ? 'Week' : 'Month';
+      const head = RP.period==='Hourly' ? 'Hour' : RP.period==='Daily' ? 'Day' : RP.period==='Weekly' ? 'Week' : RP.period==='Vehicle' ? 'Vehicle' : 'Month';
       const download = () => api('export_csv', {period:RP.period, dateFrom:RP.from, dateTo:RP.to, dir:RP.dir})
         .then(r => this.setState(st => ({rep:{...st.rep, file:r, msg:null}}))).catch(e => this.setState(st => ({rep:{...st.rep, msg:e.message}})));
       const cols = 'grid-template-columns:minmax(0,1.4fr) repeat(3,minmax(0,1fr))';
       body = h`
     <${React.Fragment}>
     <div style=${css('display:flex;align-items:stretch;gap:10px;flex-wrap:wrap')}>
-      ${box(65, 'Summary by', h`<div style=${css('display:flex;gap:6px')}>${['Hourly','Daily','Weekly','Monthly'].map(o => segBtn(o, RP.period===o, () => setRep({period:o})))}</div>`)}
+      ${box(65, 'Summary by', h`<div style=${css('display:flex;gap:6px')}>${['Hourly','Daily','Weekly','Monthly','Vehicle'].map(o => segBtn(o, RP.period===o, () => setRep({period:o})))}</div>`)}
       ${box(66, 'From', dateInput(RP.from, 'from'))}
       ${box(67, 'To', dateInput(RP.to, 'to'))}
       ${box(68, 'Show', h`<div style=${css('display:flex;gap:6px')}>${['Both','Inward','Outward'].map(o => segBtn(o, RP.dir===o, () => setRep({dir:o})))}</div>`)}
@@ -897,7 +1014,7 @@ ${s.tab==='in' && h`
     </div>
     <//>`;
     }
-    const repDate = RP.view==='custom' || RP.view==='inc' ? '' : 'Today · ' + new Date().toLocaleDateString('en-IN',{day:'2-digit', month:'short', year:'numeric'});
+    const repDate = RP.view==='custom' || RP.view==='trips' ? '' : 'Today · ' + new Date().toLocaleDateString('en-IN',{day:'2-digit', month:'short', year:'numeric'});
     return h`
 <div data-screen-label="6 Reports" style=${css('flex:1;min-width:0;display:flex;flex-direction:column;gap:12px;padding:14px 24px 16px')}>
   <div style=${css('display:flex;align-items:center;gap:10px')}>
@@ -1127,9 +1244,9 @@ ${this.renderAdmin()}
     const clearLogo = () => api('admin_clear_logo').then(() => this.setState(st => ({boot:{...st.boot, logo:null}}))).catch(er => setA({err:er.message}));
     const save = () => {
       if (A.newPw && A.newPw !== A.newPw2) return setA({err:'The two admin passwords are not the same.', msg:null});
-      api('admin_save', {patch:{site_name:d.site_name, agency_name:d.agency_name, weighbridge:d.weighbridge, cameras:d.cameras, cloud:d.cloud, reports_folder:d.reports_folder},
-        operators: ops.map(o => ({name:o.name, pin:o.pin})), adminPassword: A.newPw || null, counters: A.counters})
-      .then(view => { setA({view, draft:JSON.parse(JSON.stringify(view.settings)), ops:view.settings.operators.map(o => ({name:o.name, pin:'', has:o.has_pin})), counters:{...view.counters}, newPw:'', newPw2:'', msg:'Saved.', err:null}); api('boot').then(boot => this.setState({boot})); this.refresh(); })
+      api('admin_save', {patch:{site_name:d.site_name, agency_name:d.agency_name, weighbridge:d.weighbridge, cameras:d.cameras, cloud:d.cloud, reports_folder:d.reports_folder, retention:d.retention, live_view:d.live_view},
+        operators: ops.map(o => ({name:o.name, pin:o.pin})), adminPassword: A.newPw || null, counters: A.counters, liveViewPassword: A.lvPw || null})
+      .then(view => { setA({view, draft:JSON.parse(JSON.stringify(view.settings)), ops:view.settings.operators.map(o => ({name:o.name, pin:'', has:o.has_pin})), counters:{...view.counters}, newPw:'', newPw2:'', lvPw:'', msg:'Saved.', err:null}); api('boot').then(boot => this.setState({boot})); this.refresh(); })
       .catch(e => setA({err:e.message, msg:null}));
     };
     const logoUrl = this.state.boot.logo ? '/branding/logo?t=' + encodeURIComponent(TOKEN) + '&v=' + this.state.boot.logo : null;
@@ -1188,6 +1305,47 @@ ${this.renderAdmin()}
       </div>
     </div>
     <div class="admin-grid">${camBox('front')}${camBox('back')}</div>
+    <div class="admin-grid">
+      <div class="admin-sec">
+        <h4>Fix a vehicle number everywhere</h4>
+        <span style=${css('font-size:13px;color:var(--ink-700)')}>For a number typed wrong: every trip and its empty weight move to the right number. Old values are kept in each trip's history. To fix just one trip, open Reports → 64 Trips and press Fix.</span>
+        <div class="admin-grid">
+          <label class="admin-row">Wrong number<input list="adm-veh" value=${A.ren ? A.ren.old : ''} onChange=${e => setA({ren:{...(A.ren||{}), old:e.target.value}})} /></label>
+          <label class="admin-row">Right number<input value=${A.ren ? A.ren.new : ''} onChange=${e => setA({ren:{...(A.ren||{}), new:e.target.value.toUpperCase()}})} /></label>
+        </div>
+        <datalist id="adm-veh">${(A.view.vehicles || []).map(v => h`<option key=${v} value=${v} />`)}</datalist>
+        <div style=${css('display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:end')}>
+          <label class="admin-row">Why<input value=${A.ren ? A.ren.reason || '' : ''} onChange=${e => setA({ren:{...(A.ren||{}), reason:e.target.value}})} /></label>
+          <${Button} variant="secondary" onClick=${() => api('admin_rename_vehicle', {old:(A.ren||{}).old, new:(A.ren||{}).new, reason:(A.ren||{}).reason})
+            .then(r => { setA({ren:null, msg:'Fixed: ' + r.trips + ' trips now on ' + r.vno + '.', err:null}); this.refresh(); this.loadAdminView(); }).catch(e => setA({err:e.message, msg:null}))}>Fix everywhere<//>
+        </div>
+      </div>
+      <div class="admin-sec">
+        <h4>Storage and clean-up</h4>
+        ${!A.view.dbOk && h`<span style=${css('font-size:14px;font-weight:700;color:#C62828')}>The database check found a problem. Call support. Daily copies are in the backups folder.</span>`}
+        ${A.view.settingsRecovered && h`<span style=${css('font-size:14px;font-weight:700;color:#C77D1B')}>${'Settings file was damaged and was restored from the ' + A.view.settingsRecovered + ' copy. Please check the settings below.'}</span>`}
+        <span style=${css('font-size:14px;color:var(--ink-900)')}>${'Photos ' + A.view.storage.photos.mb + ' MB · reports ' + A.view.storage.reports.mb + ' MB · backups ' + A.view.storage.backups.mb + ' MB · records ' + A.view.storage.database_mb + ' MB'}</span>
+        <span style=${css('font-size:14px;font-weight:700;color:' + (A.view.storage.disk_free_gb < 5 ? '#C62828' : 'var(--ink-900)'))}>${'Free disk: ' + A.view.storage.disk_free_gb + ' GB of ' + A.view.storage.disk_total_gb + ' GB'}</span>
+        <span style=${css('font-size:13px;color:var(--ink-700)')}>Keep files on this PC for this many days (0 = forever). Trip records are always kept. Photos are never removed while they still wait to upload.</span>
+        <div style=${css('display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px')}>
+          ${row('Photos', ['retention','photos_days'], 'number')}
+          ${row('Reports', ['retention','reports_days'], 'number')}
+          ${row('Logs', ['retention','logs_days'], 'number')}
+          ${row('Backups', ['retention','backups_days'], 'number')}
+        </div>
+        <${Button} variant="secondary" size="sm" style=${{alignSelf:'flex-start'}} onClick=${() => api('admin_run_cleanup').then(x => setA({view:{...A.view, storage:x.storage}, msg:'Clean-up done: ' + x.report.removed_photo_days + ' photo days and ' + x.report.removed_files + ' files removed.', err:null})).catch(e => setA({err:e.message}))}>Clean up now<//>
+      </div>
+    </div>
+    <div class="admin-sec">
+      <h4>Live view for other computers</h4>
+      <span style=${css('font-size:13px;color:var(--ink-700)')}>A read-only page with both cameras, the live weight and today's trips. Open it in any browser on the same network. User name is viewer.</span>
+      <div style=${css('display:grid;grid-template-columns:auto 120px 220px minmax(0,1fr);gap:12px;align-items:end')}>
+        ${row('Turn on', ['live_view','enabled'], 'check')}
+        ${row('Port', ['live_view','port'], 'number')}
+        <label class="admin-row">${A.view.liveView.hasPassword ? 'New viewer password' : 'Viewer password (6+)'}<input type="password" value=${A.lvPw || ''} onChange=${e => setA({lvPw:e.target.value})} /></label>
+        <span style=${css('font-size:15px;color:var(--ink-900)')}>${A.view.liveView.running ? h`<b style=${{color:GRN}}>On: </b>${A.view.liveView.addresses.map(a => 'http://' + a + ':' + A.view.liveView.port).join('  or  ') || 'http://<this PC>:' + A.view.liveView.port}` : A.view.liveView.error ? h`<b style=${{color:RED}}>${A.view.liveView.error}</b>` : 'Off. Turn on, set a viewer password, then Save settings.'}</span>
+      </div>
+    </div>
     <div class="admin-grid">
       <div class="admin-sec">
         <h4>Sync to Google Cloud</h4>

@@ -9,10 +9,12 @@ at least one operator: there are no default PINs or passwords.
 import copy
 import hashlib
 import json
+import logging
 import os
 import re
 import secrets
 import threading
+import time
 import urllib.parse
 
 from . import paths
@@ -61,6 +63,10 @@ DEFAULTS = {
     "cloud": {"enabled": False, "bucket_name": "", "credentials_path": ""},
     "shifts": {"count": 3, "starts": ["06:00", "14:00", "22:00"]},
     "reports_folder": "",
+    # How long files are kept on this PC. 0 = keep forever. Records in the database are always kept.
+    "retention": {"photos_days": 90, "reports_days": 180, "logs_days": 60, "backups_days": 30},
+    # Read-only live page for other computers on the network (cameras, weight, today's trips).
+    "live_view": {"enabled": False, "port": 8090, "password_hash": ""},
     "outward_destinations": ["Ultratech cement", "Sri Sai traders", "Farmer buyer", "Landfill cell 2"],
 }
 
@@ -164,28 +170,99 @@ def _merge(base, extra):
 
 
 class Settings:
-    def __init__(self, path=None):
+    """settings.json with crash-safe saving.
+
+    adex_lite lost app_settings.json after power cuts or when a firewall /
+    antivirus held the file: it rewrote the file in place, so a cut mid-write
+    left it empty, and an unreadable file was replaced with defaults. Here:
+      * every save goes to a temp file, is forced to disk (fsync), then swapped
+        in with one atomic rename, retried if another program has the file open;
+      * the last good save is also kept as settings.json.bak, and a copy is
+        kept inside the database (``store``);
+      * a damaged file is never overwritten: it is renamed settings.json.broken-*
+        and the settings come back from the backup or the database copy.
+    """
+
+    def __init__(self, path=None, store=None):
         self.path = path or os.path.join(paths.data_dir(), "settings.json")
+        self.store = store  # object with kv_get/kv_set (the DB), or None
         self._lock = threading.Lock()
+        self.recovered = None
         self.data = self._load()
 
+    @staticmethod
+    def _read(path):
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError("not a settings object")
+        return data
+
     def _load(self):
-        try:
-            with open(self.path, "r", encoding="utf-8") as f:
-                raw = json.load(f)
-        except (OSError, ValueError):
+        raw = None
+        if os.path.exists(self.path):
+            try:
+                raw = self._read(self.path)
+            except (OSError, ValueError):
+                stamp = time.strftime("%Y%m%d-%H%M%S")
+                try:
+                    os.replace(self.path, self.path + ".broken-" + stamp)
+                except OSError:
+                    pass
+                logging.error("settings.json was damaged; recovering from a copy")
+        if raw is None:
+            # the database copy is written on every save, so it is the newest; .bak is one save older
+            for name, getter in (("database", lambda: json.loads(self.store.kv_get("settings") or "null")),
+                                 ("backup", lambda: self._read(self.path + ".bak"))):
+                try:
+                    cand = getter()
+                except Exception:
+                    cand = None
+                if isinstance(cand, dict):
+                    raw, self.recovered = cand, name
+                    break
+        if raw is None:
+            if os.path.exists(self.path + ".bak") or any(n.startswith(os.path.basename(self.path) + ".broken")
+                                                          for n in os.listdir(os.path.dirname(self.path) or ".")):
+                self.recovered = "defaults"
             data = copy.deepcopy(DEFAULTS)
             self._write(data)
             return data
         raw.pop("admin_pin_hash", None)  # the old 4-number admin PIN is not accepted any more
         raw["operators"] = [o for o in raw.get("operators", []) if o.get("pin_hash")]
-        return _merge(DEFAULTS, raw)
+        data = _merge(DEFAULTS, raw)
+        if self.recovered:
+            self._write(data)
+        return data
+
+    @staticmethod
+    def _durable(path, text):
+        """Write text to path so it survives a power cut: temp file, fsync, atomic rename."""
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        for _ in range(25):  # antivirus / firewall / backup tools can hold the file for a moment
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError:
+                time.sleep(0.2)
+        raise OSError("Could not save settings: the file is locked by another program.")
 
     def _write(self, data):
-        tmp = self.path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-        os.replace(tmp, self.path)
+        text = json.dumps(data, indent=2)
+        self._durable(self.path, text)
+        try:  # second copy of the last good save
+            self._durable(self.path + ".bak", text)
+        except OSError:
+            logging.exception("could not write settings backup")
+        if self.store is not None:
+            try:
+                self.store.kv_set("settings", text)
+            except Exception:
+                logging.exception("could not copy settings into the database")
 
     def get(self, key, default=None):
         return copy.deepcopy(self.data.get(key, default))
@@ -229,5 +306,6 @@ class Settings:
         """Settings for the admin screen, without password or PIN hashes."""
         d = copy.deepcopy(self.data)
         d.pop("admin_password_hash", None)
+        d.get("live_view", {}).pop("password_hash", None)
         d["operators"] = [{"name": o["name"], "has_pin": bool(o.get("pin_hash"))} for o in d.get("operators", [])]
         return d

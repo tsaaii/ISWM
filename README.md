@@ -20,6 +20,49 @@ Data (records, photos, settings, logo) is kept in `C:\ProgramData\ISWM`. Back up
 
 There's also **ISWM-portable** (a zip). Unzip it anywhere and run `ISWM.exe`. Its data goes in `ISWM_data` next to the exe.
 
+## Where data is kept
+
+Everything is in one folder. Installed: `C:\ProgramData\ISWM`. Portable: `ISWM_data` next to `ISWM.exe`.
+
+| Inside | What | Kept for |
+|---|---|---|
+| `iswm.sqlite3` | every trip, tare, batch, sample, correction and admin fix | forever |
+| `settings.json` (+ `.bak`, and a copy inside the database) | settings | — |
+| `images\YYYY-MM-DD\` | 2 photos per trip, about 0.3–0.8 MB each at 1080p | 90 days (admin can change; 0 = forever) |
+| `reports\` | downloaded CSV files | 180 days |
+| `backups\` | one copy of the database per day | 30 days |
+| `logs\` | one log per day | 60 days |
+| `branding\` | the logo | — |
+
+At about 200 trips a day, photos use roughly 0.1–0.3 GB a day, so 90 days is roughly 10–30 GB. Admin → *Storage and clean-up* shows the real sizes and free disk. Photos are never removed while their trip is still waiting to upload. Back up the whole folder, or turn on Google Cloud sync.
+
+**Power cuts, firewalls and antivirus.** adex_lite rewrote `app_settings.json` in place. A cut, or another program holding the file, could leave it empty, and an unreadable file was then replaced with defaults. This app instead:
+- saves to a temporary file, forces it to disk, then swaps it in with one atomic rename, retrying for up to 5 seconds if another program has the file open;
+- keeps two more copies, `settings.json.bak` and one inside the database;
+- never overwrites a damaged file. It is renamed `settings.json.broken-<time>`, the settings come back from a copy, and admin shows a notice.
+
+The database writes every save to disk before Save reports done (SQLite WAL with `synchronous=FULL`). It is checked at start-up and copied once a day to `backups\`.
+
+## Fixing a wrong vehicle number (or waste type, material, destination)
+
+Operators can't change a saved trip. They press **Ask to correct (52)** on screen 5. The admin then fixes it:
+- **One trip:** open admin, go to **Reports → 64 Trips**, find it by vehicle or ticket (the status filter **Asked** lists the requests), and press **Fix**. Change the vehicle number, From/Waste or Material/Going to, and give a reason. The ticket number stays the same.
+- **A number typed wrong on many trips:** in Admin settings, use *Fix a vehicle number everywhere*. Every trip and the vehicle's empty weight move to the right number. If the right number already exists, the two are merged.
+
+Every change keeps the old value. Click a trip to see its photos and its "Changed by admin" history. Fixed trips are marked *fixed* and re-sent to the cloud.
+
+## Live cameras on another computer
+
+**Built-in (easiest, same network).** In admin, under *Live view for other computers*, tick **Turn on**, set a viewer password and save. Admin then shows the address, for example `http://192.168.1.20:8090`. Open it in any browser on another PC or phone on the same network, with user `viewer` and the password you set. The page shows both cameras, the live weight and today's trips.
+
+ISWM is the relay, so the cameras are opened only once, by the plant PC, no matter how many people watch. The cameras' own passwords never leave the plant PC. Up to 8 streams at a time, at about 6 pictures a second.
+
+The installer allows this through the Windows firewall on **private** networks only. If the PC's network is set to *Public*, change it to *Private* in Windows network settings.
+
+**From outside the plant (internet).** Don't open a port on the router. Install [Tailscale](https://tailscale.com) (free) on the plant PC and on the viewing PC or phone, and sign in to both with the same account. Then use the plant PC's Tailscale address, for example `http://100.x.y.z:8090`, from anywhere. The connection is encrypted and needs no router changes.
+
+**Full quality for a big screen or many viewers.** The built-in page sends ISWM's light preview. For full-resolution video on a control-room screen, let the cameras or NVR serve it directly: open the RTSP main stream in VLC, use the NVR's own app (Hik-Connect, DMSS), or run [MediaMTX](https://github.com/bluenviron/mediamtx) or [go2rtc](https://github.com/AlexxIT/go2rtc), which re-stream RTSP to browsers over WebRTC with low delay.
+
 ## Admin (hidden from operators)
 
 Operators never see admin controls. To open them, press **Ctrl + Shift + A**, or tap the **site name 5 times** (top-left, or the big name on the sign-in screen), then type the admin password. An **Admin** button and a **Lock** button then appear in the top bar. Admin locks itself after 15 minutes without use, and five wrong passwords block tries for a minute.
@@ -116,6 +159,8 @@ python -m pytest -q tests
 | `iswm/server.py` | Local HTTP server on 127.0.0.1 with a per-launch token, camera MJPEG streams |
 | `iswm/main.py` | Starts everything and opens the pywebview window |
 | `installer/ISWM.iss` | Inno Setup script for `ISWM-Setup.exe` |
+| `iswm/maintenance.py` | Daily database backup and clean-up of old photos, reports and logs |
+| `iswm/liveview.py` | Password-protected live page for other computers (cameras, weight, today's trips) |
 | `web/` | The screens: React + htm, using the Tharuni design-system bundle, offline |
 | `project/`, `chats/`, `HANDOFF.md` | The original Claude Design handoff |
 
@@ -127,3 +172,5 @@ python -m pytest -q tests
 - A red **Not saved** line when the app refuses a save.
 - Sync shows **Sync off** until it is set up.
 - Download writes two CSVs, the summary and every trip, and offers **Open folder**.
+- Reports: Daily shows today's trips with vehicle numbers. **64 Trips** searches by date, vehicle, ticket and status, with photos and admin **Fix**. **63** can summarise by vehicle.
+- Live view page for other computers. Daily backups. Automatic clean-up.

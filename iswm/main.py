@@ -6,6 +6,7 @@
 """
 import argparse
 import logging
+import logging.handlers
 import os
 import sys
 import time
@@ -14,8 +15,10 @@ from . import paths
 
 
 def _log_setup():
-    logging.basicConfig(filename=os.path.join(paths.sub("logs"), "iswm.log"), level=logging.INFO,
-                        format="%(asctime)s %(levelname)s %(message)s")
+    # one log file per day, old ones removed by maintenance (and by the handler after 90 files)
+    handler = logging.handlers.TimedRotatingFileHandler(os.path.join(paths.sub("logs"), "iswm.log"),
+                                                        when="midnight", backupCount=90, encoding="utf-8")
+    logging.basicConfig(handlers=[handler], level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     if getattr(sys, "frozen", False) and sys.stderr is None:  # windowed exe has no console
         sys.stdout = sys.stderr = open(os.path.join(paths.sub("logs"), "console.log"), "a", buffering=1)
 

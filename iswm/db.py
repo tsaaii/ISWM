@@ -8,7 +8,8 @@ Rules from the design:
   * Ticket numbers: IN + R/C + YYMM + serial for inward, O + YYMM + serial
     for outward. One counter per direction that never resets, so a ticket
     number can never repeat.
-  * Saved entries are never edited here; operators ask the admin to correct.
+  * Operators cannot change a saved entry; they ask the admin, and only the
+    admin can fix it. Every change keeps the old value in entry_edits.
 """
 import datetime as dt
 import json
@@ -55,6 +56,11 @@ CREATE TABLE IF NOT EXISTS corrections (
   id INTEGER PRIMARY KEY AUTOINCREMENT, entry_id TEXT NOT NULL, reason TEXT NOT NULL,
   operator TEXT, created_at TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'waiting'
 );
+CREATE TABLE IF NOT EXISTS entry_edits (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, entry_id TEXT NOT NULL, field TEXT NOT NULL, old TEXT, new TEXT,
+  reason TEXT NOT NULL, created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS destinations (name TEXT PRIMARY KEY, last_used TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS sync_queue (
   id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, ref TEXT NOT NULL, label TEXT,
@@ -120,6 +126,7 @@ class DB:
         self.conn = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA synchronous=FULL")  # every save is on disk before Save says done
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.executescript(SCHEMA)
         for name, start in (("in", 1), ("out", 1), ("batch", 1), ("tare", 1)):
@@ -293,6 +300,137 @@ class DB:
     def entry(self, id_):
         return self.one("SELECT * FROM entries WHERE id=?", (id_,))
 
+    # admin fixes -------------------------------------------------------
+    EDITABLE = {"vno", "source", "waste_type", "material", "dest"}
+
+    def fix_entry(self, entry_id, changes, reason):
+        """Admin correction. The old values are kept in entry_edits; the ticket number never changes."""
+        reason = (reason or "").strip()
+        if not reason:
+            raise RuleError("Say why it is being changed.")
+        with self.lock:
+            e = self.entry(entry_id)
+            if not e:
+                raise RuleError("Entry not found.")
+            ch = {k: (v.strip() if isinstance(v, str) else v) for k, v in (changes or {}).items()
+                  if k in self.EDITABLE and v not in (None, "")}
+            if "vno" in ch:
+                ch["vno"] = norm_vno(ch["vno"])
+                if not ch["vno"]:
+                    raise RuleError("Type the vehicle number.")
+            if e["dir"] == "in":
+                ch.pop("material", None); ch.pop("dest", None)
+                if "source" in ch and ch["source"] not in ("Residential", "Commercial"):
+                    raise RuleError("From must be Residential or Commercial.")
+                if "waste_type" in ch and ch["waste_type"] not in IN_TYPES:
+                    raise RuleError("Waste must be Mixed, Wet or Dry.")
+            else:
+                ch.pop("source", None); ch.pop("waste_type", None)
+                if "material" in ch and ch["material"] not in MATERIALS:
+                    raise RuleError("Pick a material from the list.")
+            ch = {k: v for k, v in ch.items() if str(e.get(k) or "") != str(v)}
+            if not ch:
+                raise RuleError("Nothing was changed.")
+            self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                t = ts()
+                for k, v in ch.items():
+                    self.conn.execute("INSERT INTO entry_edits(entry_id, field, old, new, reason, created_at) "
+                                      "VALUES (?,?,?,?,?,?)", (entry_id, k, e.get(k), v, reason, t))
+                if "vno" in ch:
+                    key = self._touch_vehicle(ch["vno"])
+                    self.conn.execute("UPDATE entries SET vkey=?, vno=? WHERE id=?", (key, ch["vno"], entry_id))
+                    v = self.conn.execute("SELECT tare_kg FROM vehicles WHERE vkey=?", (key,)).fetchone()
+                    if e["dir"] == "in" and e["net_kg"] is None and v and v["tare_kg"] is not None:
+                        # the right vehicle already has an empty weight, so the trip is now complete
+                        self.conn.execute("UPDATE entries SET tare_kg=?, net_kg=?, completed_at=? WHERE id=?",
+                                          (v["tare_kg"], max(0.0, e["gross_kg"] - v["tare_kg"]), t, entry_id))
+                for k in ("source", "waste_type", "material", "dest"):
+                    if k in ch:
+                        self.conn.execute("UPDATE entries SET %s=? WHERE id=?" % k, (ch[k], entry_id))
+                self.conn.execute("UPDATE corrections SET status='done' WHERE entry_id=?", (entry_id,))
+                self._queue("entry", entry_id, "Fixed by admin")
+                self.conn.execute("COMMIT")
+            except Exception:
+                self.conn.execute("ROLLBACK")
+                raise
+        return self.entry(entry_id)
+
+    def rename_vehicle(self, old, new, reason):
+        """Fix a wrongly typed vehicle number everywhere (merges into the right one if it exists)."""
+        old_v, new_n = self.vehicle(old), norm_vno(new)
+        if not old_v:
+            raise RuleError("No vehicle %s." % norm_vno(old))
+        if not new_n or vkey(new_n) == old_v["vkey"] and new_n == old_v["vno"]:
+            raise RuleError("Type the right vehicle number.")
+        if not (reason or "").strip():
+            raise RuleError("Say why it is being changed.")
+        with self.lock:
+            target = self.vehicle(new_n)
+            if target and target["vkey"] != old_v["vkey"] and None not in (target["tare_kg"], old_v["tare_kg"]) \
+                    and abs(target["tare_kg"] - old_v["tare_kg"]) > 0.5:
+                raise RuleError("Both numbers already have different empty weights. Fix the trips one by one instead.")
+            ids = [r["id"] for r in self.q("SELECT id FROM entries WHERE vkey=?", (old_v["vkey"],))]
+            self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                t, nkey = ts(), vkey(new_n)
+                if target and target["vkey"] != old_v["vkey"]:
+                    if target["tare_kg"] is None and old_v["tare_kg"] is not None:
+                        self.conn.execute("UPDATE vehicles SET tare_kg=?, tare_at=?, tare_id=? WHERE vkey=?",
+                                          (old_v["tare_kg"], old_v["tare_at"], old_v["tare_id"], nkey))
+                    self.conn.execute("DELETE FROM vehicles WHERE vkey=?", (old_v["vkey"],))
+                else:
+                    self.conn.execute("UPDATE vehicles SET vkey=?, vno=?, last_seen=? WHERE vkey=?",
+                                      (nkey, new_n, t, old_v["vkey"]))
+                for i in ids:
+                    self.conn.execute("INSERT INTO entry_edits(entry_id, field, old, new, reason, created_at) "
+                                      "VALUES (?,?,?,?,?,?)", (i, "vno", old_v["vno"], new_n, reason.strip(), t))
+                    self._queue("entry", i, "Vehicle number fixed")
+                self.conn.execute("UPDATE entries SET vkey=?, vno=? WHERE vkey=?", (nkey, new_n, old_v["vkey"]))
+                self.conn.execute("UPDATE tares SET vkey=?, vno=? WHERE vkey=?", (nkey, new_n, old_v["vkey"]))
+                tare = self.conn.execute("SELECT tare_kg FROM vehicles WHERE vkey=?", (nkey,)).fetchone()
+                if tare and tare["tare_kg"] is not None:  # pending trips of the merged vehicle become complete
+                    for p in self.conn.execute("SELECT id, gross_kg FROM entries WHERE vkey=? AND dir='in' AND "
+                                               "net_kg IS NULL", (nkey,)).fetchall():
+                        self.conn.execute("UPDATE entries SET tare_kg=?, net_kg=?, completed_at=? WHERE id=?",
+                                          (tare["tare_kg"], max(0.0, p["gross_kg"] - tare["tare_kg"]), t, p["id"]))
+                self.conn.execute("COMMIT")
+            except Exception:
+                self.conn.execute("ROLLBACK")
+                raise
+        return {"vno": new_n, "trips": len(ids)}
+
+    def edits(self, entry_id):
+        return self.q("SELECT field, old, new, reason, created_at FROM entry_edits WHERE entry_id=? ORDER BY id",
+                      (entry_id,))
+
+    # durability -----------------------------------------------------------
+    def kv_get(self, key):
+        r = self.one("SELECT value FROM kv WHERE key=?", (key,))
+        return r["value"] if r else None
+
+    def kv_set(self, key, value):
+        with self.lock:
+            self.conn.execute("INSERT INTO kv VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, "
+                              "updated_at=excluded.updated_at", (key, value, ts()))
+
+    def integrity_ok(self):
+        try:
+            return self.one("PRAGMA quick_check")["quick_check"] == "ok"
+        except sqlite3.DatabaseError:
+            return False
+
+    def backup_to(self, path):
+        """Consistent copy of the live database (safe while the app is running)."""
+        tmp = path + ".tmp"
+        with self.lock:
+            dst = sqlite3.connect(tmp)
+            try:
+                self.conn.backup(dst)
+            finally:
+                dst.close()
+        os.replace(tmp, path)
+
     # material recovery -------------------------------------------------
     def unprocessed_trips(self, days=7):
         since = ts(now() - dt.timedelta(days=days))
@@ -432,7 +570,41 @@ class DB:
         return self.q("SELECT id, vno, gross_kg, created_at FROM entries WHERE dir='in' AND net_kg IS NULL "
                       "ORDER BY created_at")
 
+    def trips(self, d_from, d_to, direction="Both", status="All", query="", limit=2000):
+        start = dt.datetime.combine(d_from, dt.time())
+        end = dt.datetime.combine(d_to, dt.time()) + dt.timedelta(days=1)
+        sql = ("SELECT e.*, (SELECT reason FROM corrections c WHERE c.entry_id=e.id AND c.status='waiting' "
+               "ORDER BY c.id DESC LIMIT 1) AS asked, (SELECT COUNT(*) FROM entry_edits x WHERE x.entry_id=e.id) "
+               "AS edits FROM entries e WHERE created_at>=? AND created_at<?")
+        args = [ts(start), ts(end)]
+        if direction in ("Inward", "Outward"):
+            sql += " AND dir=?"; args.append("in" if direction == "Inward" else "out")
+        if status == "Complete":
+            sql += " AND net_kg IS NOT NULL"
+        elif status == "Incomplete":
+            sql += " AND net_kg IS NULL"
+        elif status == "Asked":
+            sql += " AND EXISTS (SELECT 1 FROM corrections c WHERE c.entry_id=e.id AND c.status='waiting')"
+        q = vkey(query)
+        if q:
+            sql += " AND (vkey LIKE ? OR id LIKE ?)"; args += ["%" + q + "%", "%" + q + "%"]
+        return self.q(sql + " ORDER BY created_at DESC LIMIT %d" % int(limit), args)
+
+    def report_by_vehicle(self, d_from, d_to, direction):
+        start = dt.datetime.combine(d_from, dt.time())
+        end = dt.datetime.combine(d_to, dt.time()) + dt.timedelta(days=1)
+        rows = [r for r in self.entries_between(start, end) if r["net_kg"] is not None and
+                (direction == "Both" or r["dir"] == ("in" if direction == "Inward" else "out"))]
+        by = {}
+        for r in rows:
+            b = by.setdefault(r["vno"], {"label": r["vno"], "trips": 0, "in_net": 0.0, "out_net": 0.0})
+            b["trips"] += 1
+            b["in_net" if r["dir"] == "in" else "out_net"] += r["net_kg"]
+        return sorted(by.values(), key=lambda b: -(b["in_net"] + b["out_net"]))
+
     def report_custom(self, period, d_from, d_to, direction):
+        if period == "Vehicle":
+            return self.report_by_vehicle(d_from, d_to, direction)
         start = dt.datetime.combine(d_from, dt.time())
         end = dt.datetime.combine(d_to, dt.time()) + dt.timedelta(days=1)
         rows = [r for r in self.entries_between(start, end) if r["net_kg"] is not None]

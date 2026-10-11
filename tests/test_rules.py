@@ -1,4 +1,6 @@
 import datetime as dt
+import json
+import os
 import time
 
 import pytest
@@ -245,3 +247,77 @@ def test_setup_admin_and_logo(tmp_path, monkeypatch):
             svc.admin_login("wrong-pass1")
     with pytest.raises(RuleError, match="Wait"):
         svc.admin_login("NewPass2027")  # locked out after 5 wrong tries
+
+
+def test_admin_fix_entry_and_rename_vehicle(db):
+    db.save_tare("AP 39 UA 4521", 5000, "Op")
+    e = db.save_inward("AP 39 UA 4251", "Residential", "Mixed", 8000, "Op")  # typo: pending, unknown vehicle
+    assert e["net_kg"] is None
+    db.ask_correction(e["id"], "Wrong vehicle number", "Op")
+    with pytest.raises(RuleError):
+        db.fix_entry(e["id"], {"vno": "AP 39 UA 4521"}, "")  # reason needed
+    f = db.fix_entry(e["id"], {"vno": "AP 39 UA 4521", "waste_type": "Wet"}, "typo")
+    assert f["vno"] == "AP 39 UA 4521" and f["net_kg"] == 3000 and f["waste_type"] == "Wet" and f["id"] == e["id"]
+    assert {x["field"] for x in db.edits(e["id"])} == {"vno", "waste_type"}
+    assert db.trips(dt.date.today(), dt.date.today(), status="Asked") == []
+    # rename merges a mistyped vehicle into the right one, completing its trips
+    g = db.save_inward("AP39UA452", "Commercial", "Dry", 7000, "Op")
+    r = db.rename_vehicle("AP39UA452", "AP 39 UA 4521", "typo")
+    assert r["trips"] == 1 and db.entry(g["id"])["net_kg"] == 2000 and db.vehicle("AP39UA452") is None
+    found = db.trips(dt.date.today(), dt.date.today(), query="ua4521")
+    assert len(found) == 2 and all(t["vno"] == "AP 39 UA 4521" for t in found)
+    assert db.report_custom("Vehicle", dt.date.today(), dt.date.today(), "Both")[0]["trips"] == 2
+
+
+def test_settings_survive_damage(tmp_path):
+    d = DB(str(tmp_path / "d.sqlite3"))
+    path = str(tmp_path / "settings.json")
+    s = Settings(path, store=d)
+    s.update({"site_name": "Plant A"})
+    s.update({"site_name": "Plant B"})
+    open(path, "w").write("")  # power cut left an empty file
+    s2 = Settings(path, store=d)
+    assert s2.recovered == "database" and s2.get("site_name") == "Plant B"
+    assert any(n.startswith("settings.json.broken-") for n in os.listdir(tmp_path))
+    open(path, "w").write("{garbage")
+    s3 = Settings(path)  # no database copy available: falls back to settings.json.bak
+    assert s3.recovered == "backup" and s3.get("site_name") == "Plant B"
+
+
+def test_maintenance_removes_only_old_and_sent_photos(tmp_path, monkeypatch):
+    monkeypatch.setenv("ISWM_DATA_DIR", str(tmp_path))
+    svc = Service(Settings(str(tmp_path / "s.json")), DB(str(tmp_path / "d.sqlite3")), start_devices=False)
+    img = tmp_path / "images"
+    old, new = (dt.date.today() - dt.timedelta(days=200)).isoformat(), dt.date.today().isoformat()
+    for day in (old, new):
+        (img / day).mkdir(parents=True)
+        (img / day / "x.jpg").write_bytes(b"x")
+    rep = svc.maint.run()
+    assert rep["removed_photo_days"] == 1 and not (img / old).exists() and (img / new).exists()
+    assert os.path.exists(rep["backup"])
+    st = svc.maint.storage()
+    assert st["disk_free_gb"] > 0
+
+
+def test_live_view_needs_password(tmp_path, monkeypatch):
+    import base64
+    import urllib.error
+    import urllib.request
+    monkeypatch.setenv("ISWM_DATA_DIR", str(tmp_path))
+    svc = Service(Settings(str(tmp_path / "s.json")), DB(str(tmp_path / "d.sqlite3")), start_devices=False)
+    _setup(svc)
+    svc.admin_login("Donthali2026")
+    with pytest.raises(RuleError):
+        svc.admin_save({"live_view": {"enabled": True, "port": 18095}}, liveViewPassword="Donthali2026")
+    svc.admin_save({"live_view": {"enabled": True, "port": 18095}}, liveViewPassword="watch123")
+    try:
+        assert svc.liveview.running()
+        url = "http://127.0.0.1:18095/api/today"
+        with pytest.raises(urllib.error.HTTPError):
+            urllib.request.urlopen(url, timeout=3)
+        req = urllib.request.Request(url, headers={"Authorization": "Basic " + base64.b64encode(b"viewer:watch123").decode()})
+        body = json.loads(urllib.request.urlopen(req, timeout=3).read())
+        assert body["in"]["trips"] == 0 and body["rows"] == []
+        assert "password_hash" not in svc.settings.public()["live_view"]
+    finally:
+        svc.liveview.stop()
