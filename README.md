@@ -4,7 +4,7 @@ A Windows desktop app for the ISWM Donthali weighbridge. It's built from the Cla
 
 - **Screens:** 1 Inward · 2 Outward · 3 Material recovery · 4 Tare · 5 Sync · 6 Reports, plus PIN sign-in. Admin settings are hidden from operators.
 - **Weighbridge:** serial (COM port) or `socket://ip:port`, with the weight read by a regex and multiplier as in adex_lite. A built-in simulator is available for training.
-- **Cameras:** front and back, each USB, RTSP (Hikvision / Dahua / CP Plus / other) or HTTP. Live preview with zoom. Save stores full-resolution, watermarked photos.
+- **Cameras:** front and back, plus up to 6 more (8 in all), each USB, RTSP (Hikvision / Dahua / CP Plus / other) or HTTP. Live preview with zoom from 0.75× (whole picture) to 4×. Save stores full-resolution, watermarked photos.
 - **Records:** SQLite. Tickets are `IN{R|C}YYMM####` and `O YYMM####`, from counters that never reset.
 - **Sync:** records to Google Cloud **Firestore**, batched to use very little internet. Works offline. A shared real-time API is in `cloud_api/`.
 - **Reports:** Daily, Shift, Incomplete, and Hourly/Daily/Weekly/Monthly with CSV download.
@@ -133,9 +133,9 @@ A view pauses after 10 minutes (`LIVE_MAX_MINUTES`), so a forgotten browser tab 
 
 ## Live cameras on another computer
 
-**Built-in (easiest, same network).** In admin, under *Live view for other computers*, tick **Turn on**, set a viewer password and save. Admin then shows the address, for example `http://192.168.1.20:8090`. Open it in any browser on another PC or phone on the same network, with user `viewer` and the password you set. The page shows both cameras, the live weight and today's trips.
+**Built-in (easiest, same network).** In admin, under *Live view for other computers*, tick **Turn on**, set a viewer password and save. Admin then shows the address, for example `http://192.168.1.20:8090`. Open it in any browser on another PC or phone on the same network, with user `viewer` and the password you set. The page shows all cameras, the live weight and today's trips.
 
-ISWM is the relay, so the cameras are opened only once, by the plant PC, no matter how many people watch, and only while someone is watching. The cameras' own passwords never leave the plant PC. Up to 8 streams at a time, at about 6 pictures a second.
+ISWM is the relay, so the cameras are opened only once, by the plant PC, no matter how many people watch, and only while someone is watching. The cameras' own passwords never leave the plant PC. Up to 16 streams at a time, at about 6 pictures a second.
 
 The installer allows this through the Windows firewall on **private** networks only. If the PC's network is set to *Public*, change it to *Private* in Windows network settings.
 
@@ -155,17 +155,29 @@ If the built-in window can't start, for example with a very old graphics driver,
 - the COM number changing when the adapter is moved to another USB socket;
 - a wrong baud rate or regex.
 
-Admin → Weighbridge shows the live reading and the last error.
+**Is the weighbridge connected?** The top bar shows a green **Bridge on** pill, and a green dot next to the weight blinks with every reading that arrives. Blinking means data is coming in, even when the bridge is empty and shows 0. A dot that stops blinking, or a red **Bridge off**, means no data.
+
+**The screen fits any monitor.** The layout is designed for 1366 × 620 and scales to the window: a wider screen gets wider boxes, a taller one gets bigger camera pictures. The full-view button makes the window full-screen.
+
+## 7 Settings (for the tech team)
+
+The **7 Settings** tab (Alt + 7) is open to everyone, so a technician can check things without the admin password:
+- **Weighbridge:** connected or not, the live weight, readings per second, the **COM port**, a **Refresh** button that lists the COM ports on this PC, and the **last raw line** received from the indicator (useful when the weight pattern is wrong);
+- **Cameras:** every camera with its type, **IP address and port**, status (Live / Off / Problem with the error), resolution, and a **Check** button that shows its picture.
+
+With admin unlocked, the COM port and camera IP/port can be changed here and saved. Saving a COM port also turns the simulator off. Baud rate, parity, stop bits, weight pattern, camera endpoints, user names and passwords stay in Admin.
 
 ## Admin (hidden from operators)
 
-Operators never see admin controls. To open them, press **Ctrl + Shift + A**, or tap the **site name 5 times** (top-left, or the big name on the sign-in screen), then type the admin password. An **Admin** button and a **Lock** button then appear in the top bar. Admin locks itself after 15 minutes without use, and five wrong passwords block tries for a minute.
+Operators never see admin controls. To open them, press **Ctrl + Shift + A**, or tap the **site name 5 times** (top-left, or the big name on the sign-in screen), then type the admin password. A black **gear** button (admin settings) and a **padlock** button (lock admin) then appear in the top bar. Admin locks itself after 15 minutes without use, and five wrong passwords block tries for a minute.
 
 Only the admin can change:
 - site name, company and **logo** (PNG/JPG/WebP, under 2 MB, shown on the sign-in screen and top bar);
 - operators and their PINs (each operator needs their own PIN; easy PINs like 1111 or 1234 are refused);
 - the admin password (8+ characters, letters and numbers, must not contain an operator's PIN);
 - weighbridge, cameras, Google Cloud sync, ticket serials and the reports folder.
+
+**More cameras.** Admin → *Cameras* → **Add camera** (up to 8 in all). Each camera has a name shown on screen, a **Show on weighing screens** tick and a **Take photo at Save** tick. Front and back can't be removed; added cameras can. The weighing screens arrange the shown cameras so each picture is as big as possible. Front and back keep their support codes (12/13, 22/23, 42/43); added ones show C3, C4, …. Every camera with *Take photo* on is photographed at Save, and a trip's photos all appear when it is opened in Reports. The live-view page and the remote view list all cameras.
 
 There are no default passwords or PINs.
 
@@ -176,7 +188,7 @@ Everything works with just a keyboard or just a mouse. Press **F1** in the app t
 | | Keyboard | Mouse only |
 |---|---|---|
 | Sign in | ← → pick your name (the last person is already picked); type the PIN on the number row or number pad. Backspace undoes, Delete clears. | Tap your name, tap the PIN keys |
-| Change screen | Alt + 1 … 6 | Tap the tabs |
+| Change screen | Alt + 1 … 7 | Tap the tabs |
 | Vehicle | Just start typing. ↑ ↓ choose, Enter picks | Tap the box and pick from the list; for a new number, turn on the keyboard button |
 | Save | Enter again in the vehicle box once the weight is steady, or Ctrl + S | Tap Save |
 | Inward From / Waste | Alt + R / C, Alt + M / W / D | Tap |
@@ -251,7 +263,7 @@ python -m pytest -q tests
 | `iswm/cloud.py` | Batched Firestore sync (REST, no background traffic), optional photo upload |
 | `cloud_api/` | Shared read-only real-time API for Cloud Run, plus Firestore rules |
 | `iswm/service.py` | One method per UI action |
-| `iswm/server.py` | Local HTTP server on 127.0.0.1 with a per-launch token, camera MJPEG streams |
+| `iswm/server.py` | Local HTTP server on 127.0.0.1 with a per-launch token, camera frames |
 | `iswm/main.py` | Starts everything and opens the window |
 | `iswm/window.py` | The standalone window (Qt WebEngine), Edge fallback, one-ISWM-per-PC |
 | `iswm/remote.py` | Remote camera view: asks the relay if anyone watches, sends pictures only then |

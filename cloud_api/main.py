@@ -175,7 +175,16 @@ QUALITY = {"low": (480, 50, 1.0), "normal": (640, 60, 1.0), "high": (960, 70, 2.
 def live(site):
     with LIVE_LOCK:
         return LIVE.setdefault(site, {"want": {}, "frames": {}, "weight": None, "seen": 0.0, "q": "normal",
-                                      "cond": threading.Condition(), "bytes": 0})
+                                      "cond": threading.Condition(), "bytes": 0,
+                                      "cams": [["front", "Front camera"], ["back", "Back camera"]]})
+
+
+CAM_NAME = re.compile(r"front|back|cam[3-9]")
+
+
+def cam_ok(cam):
+    if not CAM_NAME.fullmatch(cam or ""):
+        abort(404, "No such camera.")
 
 
 def plant_ok(site):
@@ -196,6 +205,13 @@ def plant_wanted(site):
     plant_ok(site)
     st = live(site)
     st["seen"] = time.time()
+    try:  # the plant's camera list, so viewers see the right buttons
+        cams = json.loads(request.headers.get("X-Cams") or "null")
+        if isinstance(cams, list):
+            st["cams"] = [[str(c[0]), str(c[1])[:24]] for c in cams[:8]
+                          if isinstance(c, list) and len(c) == 2 and CAM_NAME.fullmatch(str(c[0]))]
+    except ValueError:
+        pass
     w, q, f = QUALITY[st["q"]]
     return jsonify({"cams": wanted(st), "width": w, "quality": q, "fps": f})
 
@@ -204,8 +220,7 @@ def plant_wanted(site):
 def plant_frame(site, cam):
     """The plant sends one picture (only while someone watches). Replies with who is still watching."""
     plant_ok(site)
-    if cam not in ("front", "back"):
-        abort(404, "No such camera.")
+    cam_ok(cam)
     data = request.get_data(cache=False)
     if not data.startswith(b"\xff\xd8") or len(data) > 2_000_000:
         abort(400, "Send a JPEG.")
@@ -227,8 +242,7 @@ def plant_frame(site, cam):
 def live_stream(site, cam):
     """A viewer watches one camera. Watching is what makes the plant send pictures."""
     check_site(site)
-    if cam not in ("front", "back"):
-        abort(404, "No such camera.")
+    cam_ok(cam)
     st = live(site)
     if request.args.get("q") in QUALITY:
         st["q"] = request.args["q"]
@@ -258,7 +272,8 @@ def live_state(site):
     now = time.time()
     return jsonify({"plant_online": now - st["seen"] < 60, "weight": st["weight"], "watching": wanted(st),
                     "frame_age": {c: round(now - f[1], 1) for c, f in st["frames"].items()},
-                    "mb_sent": round(st["bytes"] / 1e6, 1), "max_minutes": VIEW_MINUTES, "quality": st["q"]})
+                    "mb_sent": round(st["bytes"] / 1e6, 1), "max_minutes": VIEW_MINUTES, "quality": st["q"],
+                    "cams": st["cams"]})
 
 
 @app.get("/live/<site>")
@@ -283,24 +298,26 @@ main{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:1
 </style></head><body>
 <header><h1>{{SITE}}</h1><span id="plant" class="pill">…</span><span><span id="w">—</span> kg</span>
 <span style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap">
-<button data-cams="front" class="on">Front</button><button data-cams="back">Back</button><button data-cams="front,back">Both</button>
+<span id="pick" style="display:contents"></span>
 <button data-q="low">Low data</button><button data-q="normal" class="on">Normal</button><button data-q="high">Sharper</button>
 <button id="stop">Stop</button></span></header>
 <main id="cams"></main>
 <p class="muted" style="padding:0 16px" id="info">Pictures are sent only while this page is open, and pause after a few minutes to save data.</p>
 <script>
-var key=new URLSearchParams(location.search).get('key')||'', site='{{SITE}}', cams=['front'], q='normal', on=true;
+var key=new URLSearchParams(location.search).get('key')||'', site='{{SITE}}', cams=['front'], q='normal', on=true, list=null, names={};
 function api(p){return fetch('/v1/sites/'+site+p,{headers:{'X-API-Key':key}}).then(function(r){return r.json()})}
 function draw(){var m=document.getElementById('cams');m.innerHTML='';if(!on){m.innerHTML='<div class="cam">Stopped. Choose a camera to watch again.</div>';return}
- cams.forEach(function(c){var d=document.createElement('div');d.className='cam';d.innerHTML='<b>'+(c==='front'?'Front':'Back')+' camera</b><span>Waiting for the plant… (up to 20 s)</span>';
+ cams.forEach(function(c){var d=document.createElement('div');d.className='cam';d.innerHTML='<b></b><span>Waiting for the plant… (up to 20 s)</span>';d.querySelector('b').textContent=names[c]||c;
  var i=new Image();i.onload=function(){var sp=d.querySelector('span');if(sp)sp.remove()};
  i.onerror=function(){setTimeout(draw,5000)};i.src='/v1/sites/'+site+'/live/'+c+'.mjpg?key='+encodeURIComponent(key)+'&q='+q+'&t='+Date.now();d.appendChild(i);m.appendChild(d)})}
-document.querySelectorAll('[data-cams]').forEach(function(b){b.onclick=function(){cams=b.dataset.cams.split(',');on=true;
- document.querySelectorAll('[data-cams]').forEach(function(x){x.className=x===b?'on':''});draw()}});
+function buttons(l){var k=JSON.stringify(l);if(k===list)return;list=k;var p=document.getElementById('pick');p.innerHTML='';
+ l.forEach(function(c){names[c[0]]=c[1]});var opts=l.map(function(c){return [c[0],c[1]]});if(l.length>1)opts.push([l.map(function(c){return c[0]}).join(','),'All']);
+ opts.forEach(function(o){var b=document.createElement('button');b.dataset.cams=o[0];b.textContent=o[1];b.className=o[0]===cams.join(',')?'on':'';
+ b.onclick=function(){cams=o[0].split(',');on=true;p.querySelectorAll('button').forEach(function(x){x.className=x===b?'on':''});draw()};p.appendChild(b)})}
 document.querySelectorAll('[data-q]').forEach(function(b){b.onclick=function(){q=b.dataset.q;
  document.querySelectorAll('[data-q]').forEach(function(x){x.className=x===b?'on':''});draw()}});
 document.getElementById('stop').onclick=function(){on=false;draw()};
-function tick(){api('/live/state').then(function(s){var p=document.getElementById('plant');p.textContent=s.plant_online?'Plant online':'Plant offline';
+function tick(){api('/live/state').then(function(s){if(s.cams)buttons(s.cams);var p=document.getElementById('plant');p.textContent=s.plant_online?'Plant online':'Plant offline';
  p.style.background=s.plant_online?'#1B8A3A':'#C62828';var w=s.weight;document.getElementById('w').textContent=w&&w.connected?Math.round(w.weight).toLocaleString('en-IN'):'—';
  document.getElementById('info').textContent='Pictures are sent only while this page is open. Each view pauses after '+s.max_minutes+' minutes. Sent through the relay since it started: '+s.mb_sent+' MB.'}).catch(function(){})}
 draw();tick();setInterval(tick,3000);

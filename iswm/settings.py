@@ -20,8 +20,11 @@ import urllib.parse
 from . import paths
 
 
-def camera_defaults(index):
+def camera_defaults(index, label=None):
     return {
+        "label": label or ("Front camera" if index == 0 else "Back camera" if index == 1 else "Camera %d" % (index + 1)),
+        "show": True,             # shown on the weighing screens
+        "photo": True,            # photographed when an entry is saved
         "type": "USB",            # USB | RTSP | HTTP | None
         "brand": "Hikvision",     # preset that fills in endpoints: Hikvision | Dahua | CP Plus | Generic
         "index": index,           # USB device number
@@ -59,6 +62,7 @@ DEFAULTS = {
         "stable_seconds": 2.0,
         "min_weight_kg": 10,
     },
+    # front and back always exist; admin can add more (cam3, cam4, ...). Order on screen = order here.
     "cameras": {"front": camera_defaults(0), "back": camera_defaults(1)},
     # Google Cloud: records go to Firestore; photos only if "photos" is small/full (needs bucket_name).
     "cloud": {"enabled": False, "credentials_path": "", "project_id": "", "database": "(default)", "site_id": "",
@@ -173,6 +177,42 @@ def _merge(base, extra):
     return out
 
 
+MAX_CAMERAS = 8
+
+
+def camera_ids(cams):
+    """Cameras in screen order: front, back, then the added ones by number."""
+    extra = sorted((k for k in cams if k not in ("front", "back")), key=lambda k: (len(k), k))
+    return [k for k in ("front", "back") if k in cams] + extra
+
+
+def normalize_cameras(cams):
+    """Front and back always exist; added cameras are cam3..cam8. Missing fields get defaults."""
+    cams = {k: v for k, v in (cams or {}).items()
+            if isinstance(v, dict) and (k in ("front", "back") or re.fullmatch(r"cam[3-9]", k))}
+    out = {}
+    for k in camera_ids({"front": 1, "back": 1, **cams})[:MAX_CAMERAS]:
+        n = 0 if k == "front" else 1 if k == "back" else int(k[3:]) - 1
+        c = _merge(camera_defaults(n), cams.get(k) or {})
+        c["label"] = (str(c.get("label") or "").strip() or camera_defaults(n)["label"])[:24]
+        c["show"], c["photo"] = bool(c.get("show")), bool(c.get("photo"))
+        out[k] = c
+    return out
+
+
+def camera_address(cfg):
+    """Where a camera is, for the Settings screen (no password)."""
+    kind = (cfg.get("type") or "USB").upper()
+    if kind == "NONE":
+        return "Not set up"
+    if kind == "USB":
+        return "USB %s" % (cfg.get("index") or 0)
+    if cfg.get("url") and not cfg.get("ip"):
+        host = urllib.parse.urlsplit(cfg["url"]).hostname or cfg["url"]
+        return host
+    return "%s:%s" % (cfg.get("ip") or "?", cfg.get("port") or ("554" if kind == "RTSP" else "80"))
+
+
 class Settings:
     """settings.json with crash-safe saving.
 
@@ -235,6 +275,7 @@ class Settings:
         raw.pop("admin_pin_hash", None)  # the old 4-number admin PIN is not accepted any more
         raw["operators"] = [o for o in raw.get("operators", []) if o.get("pin_hash")]
         data = _merge(DEFAULTS, raw)
+        data["cameras"] = normalize_cameras(data.get("cameras"))
         if self.recovered:
             self._write(data)
         return data

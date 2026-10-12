@@ -23,7 +23,8 @@ API = {"boot", "login", "logout", "live", "state", "vehicle_status", "vehicle_pi
        "save_in", "save_out", "save_tare", "save_batch", "save_sample", "ask_correction", "retry_sync",
        "set_shifts", "report", "export_csv", "open_folder", "toggle_full", "setup", "admin_login", "admin_view",
        "admin_save", "admin_lock", "admin_set_logo", "admin_clear_logo", "admin_fix_entry",
-       "admin_rename_vehicle", "admin_run_cleanup", "entry_history", "export_trips", "camera_watch"}
+       "admin_rename_vehicle", "admin_run_cleanup", "entry_history", "export_trips", "camera_watch",
+       "settings_view", "settings_save"}
 MAX_BODY = 4 * 1024 * 1024
 
 mimetypes.add_type("application/javascript", ".js")
@@ -103,7 +104,16 @@ def make_handler(service, token, log_errors):
             if url.path.startswith("/cam/"):
                 if not self._authorised(query):
                     return self._send(403, b"{}")
-                return self._mjpeg(url.path[5:].split(".")[0])
+                name = url.path[5:].split(".")[0]
+                if url.path.endswith(".jpg"):  # one frame; the screen asks again (keeps browser connections free)
+                    cam = service.cams.cams.get(name)
+                    if cam is None:
+                        return self._send(404, b"{}")
+                    if (query.get("watch") or [""])[0] == "1":
+                        cam.demand(5)
+                    jpg = cam.jpeg()
+                    return self._send(200, jpg, "image/jpeg") if jpg else self._send(204, b"", "image/jpeg")
+                return self._mjpeg(name)
             rel = urllib.parse.unquote(url.path.lstrip("/")) or "index.html"
             full = os.path.realpath(os.path.join(web, rel))
             if not full.startswith(web + os.sep) or not os.path.isfile(full):

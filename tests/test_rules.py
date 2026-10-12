@@ -398,3 +398,37 @@ def test_window_opens_in_browser_app_mode_and_single_instance(tmp_path, monkeypa
     assert opened and "t=x" in shown[0]
     a, b = window.SingleInstance(), window.SingleInstance()
     assert a.acquire() and not b.acquire()
+
+
+def test_more_cameras_settings_tab_and_photos(tmp_path, monkeypatch):
+    from iswm.settings import normalize_cameras
+    # front/back always exist, unknown names dropped, at most 8, defaults filled in
+    cams = normalize_cameras({"cam3": {"label": "Gate"}, "evil": {}, **{"cam%d" % i: {} for i in range(4, 12)}})
+    assert list(cams)[:3] == ["front", "back", "cam3"] and len(cams) == 8 and "evil" not in cams
+    assert cams["cam3"]["label"] == "Gate" and cams["cam4"]["label"] == "Camera 4" and cams["cam3"]["photo"]
+
+    monkeypatch.setenv("ISWM_DATA_DIR", str(tmp_path))
+    svc = Service(Settings(str(tmp_path / "s.json")), DB(str(tmp_path / "d.sqlite3")), start_devices=False)
+    _setup(svc)
+    v = svc.settings_view()  # anyone can look
+    assert list(v["cams"]) == ["front", "back"] and "rate" in v["wb"] and "seq" in v["wb"]
+    with pytest.raises(RuleError):
+        svc.settings_save(comPort="COM4")  # only the admin can change
+    svc.admin_login("Donthali2026")
+    c = svc.settings.get("cameras")
+    c["cam3"] = {"label": "Gate", "type": "RTSP", "ip": "10.0.0.9"}
+    svc.admin_save({"cameras": c})
+    assert list(svc.cams.status()) == ["front", "back", "cam3"] and svc.cams.label("cam3") == "Gate"
+    v = svc.settings_save(comPort="COM4", cams={"cam3": {"ip": "10.0.0.10", "port": "8554"}})
+    assert v["comPort"] == "COM4" and not v["simulate"] and v["cams"]["cam3"]["addr"] == "10.0.0.10:8554"
+    del c["cam3"]
+    svc.admin_save({"cameras": c})  # removing really removes
+    assert "cam3" not in svc.settings.get("cameras") and "cam3" not in svc.cams.cams
+    # photos of added cameras are kept with the entry
+    e = svc.db.save_inward("AP39TB1", "Residential", "Mixed", 9000, "Op")
+    p = tmp_path / "x.jpg"
+    p.write_bytes(b"\xff\xd8x")
+    svc.db.set_photos("entries", e["id"], {"front": str(p), "back": None, "cam3": str(p)})
+    h = svc.entry_history(e["id"])
+    assert [x["cam"] for x in h["photos"]] == ["front", "cam3"] and all(x["here"] for x in h["photos"])
+    assert svc.photo_path(e["id"], "cam3") == str(p)

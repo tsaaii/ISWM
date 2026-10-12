@@ -35,7 +35,7 @@ COLLECTION = {"entry": "entries", "tare": "tares", "batch": "batches", "sample":
 MAX_WRITES = 400
 _tz = time.strftime("%z") or "+0000"
 TZ = _tz[:3] + ":" + _tz[3:]
-SKIP_FIELDS = {"front_photo", "back_photo", "vkey"}
+SKIP_FIELDS = {"front_photo", "back_photo", "extra_photos", "vkey"}
 
 
 def slug(s):
