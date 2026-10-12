@@ -16,13 +16,29 @@ async function api(name, args) {
   if (!j.ok) throw new Error(j.error || 'Something went wrong.');
   return j.data;
 }
-const camUrl = name => '/cam/' + name + '.mjpg?t=' + encodeURIComponent(TOKEN);
 // Cameras in screen order: front, back, then the added ones (cam3, cam4, ...)
 const MAX_CAMS = 8;
 const BASE_W = 1366, BASE_H = 620;  // the design's screen size
 const ZOOMS = [0.75, 1, 1.5, 2, 2.5, 3, 3.5, 4];
 const zoomStep = (z, dir) => { let i = ZOOMS.findIndex(x => x >= z - 0.01); if (i < 0) i = ZOOMS.length - 1; return ZOOMS[Math.min(ZOOMS.length - 1, Math.max(0, i + dir))]; };
 const camIds = cams => { const k = Object.keys(cams || {}); return ['front','back'].filter(x => k.includes(x)).concat(k.filter(x => x !== 'front' && x !== 'back').sort((a, b) => a.length - b.length || (a < b ? -1 : 1))); };
+
+// A live camera picture. Fetches one frame at a time instead of holding an MJPEG stream open:
+// browsers allow only 6 connections to the app, and with many cameras the streams would use them all up.
+class LiveImg extends React.Component {
+  componentDidMount() { this.alive = true; this.loop(); }
+  componentWillUnmount() { this.alive = false; clearTimeout(this.t); if (this.url) URL.revokeObjectURL(this.url); }
+  loop() {
+    if (!this.alive) return;
+    const p = this.props, started = Date.now();
+    fetch('/cam/' + p.name + '.jpg?t=' + encodeURIComponent(TOKEN) + (p.watch ? '&watch=1' : '') + '&n=' + started, {cache:'no-store'})
+      .then(r => r.status === 200 ? r.blob() : null)
+      .then(b => { if (b && this.alive && this.img) { const old = this.url; this.url = URL.createObjectURL(b); this.img.src = this.url; if (old) URL.revokeObjectURL(old); } })
+      .catch(() => {})
+      .finally(() => { if (this.alive) this.t = setTimeout(() => this.loop(), Math.max(30, (p.every || 120) - (Date.now() - started))); });
+  }
+  render() { const p = this.props; return h`<img ref=${el => { this.img = el; }} class=${p.className} alt=${p.alt || ''} style=${p.style} />`; }
+}
 
 // The prototype writes styles as CSS strings; React wants objects.
 const cssCache = new Map();
@@ -342,7 +358,7 @@ class App extends React.Component {
     k.goTare = () => this.goTare(f.veh);
     const shown = camIds(s.live.cams).filter(n => s.live.cams[n].show !== false);
     k.cams = shown.map(name => {
-      const n = camIds(s.live.cams).indexOf(name), code = n === 0 ? cd.cams[0] : n === 1 ? cd.cams[1] : 'C' + (n + 1);
+      const code = name === 'front' ? cd.cams[0] : name === 'back' ? cd.cams[1] : 'C' + name.slice(3);
       const z = (s.zoom||{})[name] || 1, cst = s.live.cams[name] || {};
       const step = dir => this.setZoom(name, zoomStep(z, dir));
       return {code, name, live: !!cst.live, on: !!cst.on, setUp: cst.error !== 'Not set up', label: cst.label || name,
@@ -524,7 +540,7 @@ ${this.renderHelp()}
       : mode==='off' ? {label:'Sync off', bg:'#E8EDEA', fg:'#151515'}
       : {label:'Offline', bg:'#E8EDEA', fg:'#151515'};
     const wbOff = !this.wbOn();
-    const tabs = [['in',1,'Inward'],['out',2,'Outward'],['rec',3,'Material recovery'],['tare',4,'Tare'],['sync',5,'Sync'],['rep',6,'Reports'],['set',7,'Settings']].map(([id,n,label]) => {
+    const tabs = [['in',1,'Inward'],['out',2,'Outward'],['rec',3,'Recovery'],['tare',4,'Tare'],['sync',5,'Sync'],['rep',6,'Reports'],['set',7,'Settings']].map(([id,n,label]) => {
       const on = s.tab===id;
       return {id, n, label, color: on ? '#fff' : C[n], fg: on ? (n===4 ? '#151515' : C[n]) : FG[n], tfg: on ? FG[n] : 'var(--ink-900)', border: on ? (n===4 ? '#151515' : C[n]) : 'var(--ink-300)', bg: on ? C[n] : '#fff', weight: on ? 700 : 400,
         hasCount: id==='tare' && srv.pending.length>0, count: srv.pending.length, go: () => this.goTab(id)};
@@ -535,9 +551,9 @@ ${this.renderHelp()}
     const fullIcon = s.full ? 'M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3' : 'M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3';
     const endShift = () => { if (window.confirm('End shift for ' + boot.operator + '?')) api('logout').then(() => this.setState(st => ({loggedIn:false, boot:{...st.boot, operator:null}}))); };
     return h`
-<div style=${css('height:64px;flex:none;display:flex;align-items:center;gap:10px;padding:0 14px;background:#fff')}>
+<div style=${css('height:64px;flex:none;display:flex;align-items:center;gap:8px;padding:0 12px;background:#fff')}>
   ${this.logoUrl() && h`<img src=${this.logoUrl()} alt="" style=${css('height:40px;max-width:120px;object-fit:contain;flex:none')} />`}
-  <div onClick=${() => this.secretTap()} title=${boot.site + ' · ' + boot.agency} style=${css('display:flex;flex-direction:column;line-height:1.15;flex:0 1 auto;min-width:60px;max-width:220px;white-space:nowrap;user-select:none;overflow:hidden')}>
+  <div onClick=${() => this.secretTap()} title=${boot.site + ' · ' + boot.agency} style=${css('display:flex;flex-direction:column;line-height:1.15;flex:0 1 auto;min-width:120px;max-width:220px;white-space:nowrap;user-select:none;overflow:hidden')}>
     <span style=${css('font-size:17px;font-weight:700;color:var(--ink-900);overflow:hidden;text-overflow:ellipsis')}>${boot.site}</span>
     <span style=${css('font-size:12px;color:var(--ink-700);overflow:hidden;text-overflow:ellipsis')}>${boot.agency}</span>
   </div>
@@ -614,7 +630,7 @@ ${s.tab==='set' && this.renderSet()}
       ${k.cams.length === 0 && h`<div style=${css('display:flex;align-items:center;justify-content:center;border-radius:16px;border:2px dashed var(--ink-300);color:var(--ink-700);font-size:17px')}>No cameras on this screen. The admin can choose them.</div>`}
       ${k.cams.map(cam => h`
         <div key=${cam.name} onWheel=${cam.onWheel} style=${css('border-radius:16px;background:' + (cam.live && cam.fit ? '#151515' : '#C9CFCB') + ';border:2px solid #9AA79F;position:relative;overflow:hidden;min-width:0;min-height:0')}>
-          ${cam.live ? h`<img key=${'img' + cam.name} class="cam-img" src=${camUrl(cam.name)} alt=${cam.label} style=${cam.fit ? {objectFit:'contain', transform:'none'} : {transform:'scale(' + cam.z + ')'}} />`
+          ${cam.live ? h`<${LiveImg} key=${'img' + cam.name} name=${cam.name} className="cam-img" alt=${cam.label} style=${cam.fit ? {objectFit:'contain', transform:'none'} : {transform:'scale(' + cam.z + ')'}} />`
             : h`<div style=${css('position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:8px;color:var(--ink-700);font-size:' + (k.camSmall ? 15 : 18) + 'px;font-weight:700;text-align:center')}>
               <span style=${css('display:flex;align-items:center;gap:8px;max-width:100%')}><span style=${css('display:inline-flex;align-items:center;justify-content:center;min-width:30px;height:26px;padding:0 7px;border-radius:999px;background:' + k.cc + ';color:' + k.ccFg + ';font-size:14px;flex:none')}>${cam.code}</span><span style=${css('white-space:nowrap;overflow:hidden;text-overflow:ellipsis')}>${cam.label}</span></span>
               ${cam.setUp && h`<button onClick=${() => this.setCamWatch(true)} title="Show the cameras (Alt+V)" style=${css('height:' + (k.camSmall ? 34 : 40) + 'px;padding:0 16px;border-radius:999px;border:2px solid var(--ink-700);background:#fff;color:var(--ink-900);font-size:' + (k.camSmall ? 14 : 15) + 'px;font-weight:700;cursor:pointer;white-space:nowrap')}>${cam.on ? 'Starting…' : 'View live'}</button>`}
@@ -1182,7 +1198,7 @@ ${s.tab==='in' && h`
         <datalist id="set-ports">${ports.map(p => h`<option key=${p} value=${p} />`)}</datalist>
         <button onClick=${refresh} title="Look for COM ports again" style=${css('display:flex;align-items:center;gap:6px;height:38px;padding:0 12px 0 5px;border-radius:999px;border:2px solid var(--ink-300);background:#fff;color:var(--ink-900);font-size:15px;font-weight:700;cursor:pointer;white-space:nowrap;flex:none')}>${badge(72, slate, '#fff', 'height:26px')}Refresh</button>
       </div>
-      <span style=${css('font-size:14px;color:var(--ink-700)')}>${'Ports on this PC: ' + (v.ports.length ? v.ports.join(', ') : 'none found')}</span>
+      <span style=${css('font-size:14px;color:var(--ink-700)')}>${'Ports on this PC: ' + (v.ports.length ? v.ports.join(', ') : 'none found')}${admin && v.simulate ? '. Simulator is on; saving a COM port turns it off.' : ''}</span>
     </div>
     <div style=${css('display:flex;flex-direction:column;gap:4px')}>
       <span style=${css(lab)}>Last line from the weighbridge</span>
@@ -1201,7 +1217,7 @@ ${s.tab==='in' && h`
     <div style=${css('flex:1;min-height:0;overflow-y:auto')}>
       ${ids.map((n, i) => { const c = v.cams[n], ip = c.type === 'RTSP' || c.type === 'HTTP'; return h`
         <div key=${n} style=${css('display:grid;grid-template-columns:minmax(0,1.2fr) 70px minmax(0,1.3fr) 110px 120px;gap:8px;align-items:center;padding:6px 16px;border-bottom:1px solid var(--ink-200);font-size:16px;color:var(--ink-900)')}>
-          <span style=${css('display:flex;flex-direction:column;min-width:0')}><b style=${css('white-space:nowrap;overflow:hidden;text-overflow:ellipsis')}>${c.label}</b><span style=${css('font-size:13px;color:var(--ink-700)')}>${(i < 2 ? (i === 0 ? 'Front' : 'Back') : 'Camera ' + (i + 1)) + (c.show === false ? ' · hidden' : '') + (c.photo === false ? ' · no photo' : '')}</span></span>
+          <span style=${css('display:flex;flex-direction:column;min-width:0')}><b style=${css('white-space:nowrap;overflow:hidden;text-overflow:ellipsis')}>${c.label}</b><span style=${css('font-size:13px;color:var(--ink-700)')}>${(n === 'front' ? 'Front' : n === 'back' ? 'Back' : 'Camera ' + n.slice(3)) + (c.show === false ? ' · hidden' : '') + (c.photo === false ? ' · no photo' : '')}</span></span>
           <span style=${css('font-size:15px;color:var(--ink-700)')}>${c.type === 'NONE' ? '—' : c.type}</span>
           ${admin && ip ? h`<span style=${css('display:grid;grid-template-columns:minmax(0,1fr) 70px;gap:6px')}><input value=${camVal(n,'ip')} placeholder="192.168.1.64" onChange=${e => setCam(n, 'ip', e.target.value.trim())} style=${css(inp)} /><input value=${camVal(n,'port')} placeholder="554" onChange=${e => setCam(n, 'port', e.target.value.replace(/\D/g,''))} style=${css(inp)} /></span>`
             : h`<span style=${css('font-family:Consolas,monospace;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis')}>${c.addr}</span>`}
@@ -1209,7 +1225,7 @@ ${s.tab==='in' && h`
             <span style=${css('font-size:12px;color:var(--ink-700);white-space:nowrap;overflow:hidden;text-overflow:ellipsis')}>${c.live && c.size ? c.size[0] + '×' + c.size[1] : c.error && c.error !== 'Not set up' ? c.error : ''}</span></span>
           <button onClick=${() => check(n)} disabled=${c.type === 'NONE'} style=${css('justify-self:end;display:flex;align-items:center;gap:6px;height:36px;padding:0 12px 0 5px;border-radius:999px;border:2px solid ' + (S.check === n ? slate : 'var(--ink-300)') + ';background:' + (S.check === n ? slate : '#fff') + ';color:' + (S.check === n ? '#fff' : 'var(--ink-900)') + ';font-size:14px;font-weight:700;cursor:pointer;white-space:nowrap')}>${badge(75, S.check === n ? '#fff' : slate, S.check === n ? slate : '#fff', 'height:24px;min-width:28px')}${S.check === n ? 'Close' : 'Check'}</button>
         </div>
-        ${S.check === n && h`<div key=${n + '-p'} style=${css('padding:8px 16px;border-bottom:1px solid var(--ink-200);background:var(--ink-050)')}><img src=${camUrl(n) + '&watch=1'} alt=${c.label} style=${css('display:block;width:100%;max-height:260px;object-fit:contain;background:#151515;border-radius:10px')} /></div>`}`; })}
+        ${S.check === n && h`<div key=${n + '-p'} style=${css('padding:8px 16px;border-bottom:1px solid var(--ink-200);background:var(--ink-050)')}><${LiveImg} name=${n} watch=${true} alt=${c.label} style=${css('display:block;width:100%;height:240px;object-fit:contain;background:#151515;border-radius:10px')} /></div>`}`; })}
     </div>
     <div style=${css('display:flex;align-items:center;gap:12px;padding:8px 16px;border-top:2px solid var(--ink-300)')}>
       <span style=${css('flex:1;min-width:0;font-size:15px;font-weight:700;color:' + (S.err ? '#C62828' : 'var(--green-700)'))}>${S.err || S.msg || ''}</span>
@@ -1288,8 +1304,8 @@ ${this.renderAdmin()}
   adminButtons() {
     if (!this.state.live.admin) return null;
     return h`
-    <button onClick=${() => this.loadAdminView()} title="Admin settings" aria-label="Admin settings" style=${css('display:flex;align-items:center;gap:6px;height:38px;padding:0 12px 0 8px;flex:none;border-radius:999px;border:2px solid #151515;background:#151515;color:#fff;cursor:pointer;font-size:14px;font-weight:700;white-space:nowrap')}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path><circle cx="12" cy="12" r="3"></circle></svg>Admin</button>
-    <button onClick=${() => this.lockAdmin()} title="Lock admin" style=${css('height:38px;padding:0 12px;flex:none;border-radius:999px;border:2px solid var(--ink-300);background:#fff;color:var(--ink-900);cursor:pointer;font-size:14px;font-weight:700')}>Lock</button>`;
+    <button onClick=${() => this.loadAdminView()} title="Admin settings" aria-label="Admin settings" style=${css('display:flex;align-items:center;justify-content:center;width:38px;height:38px;padding:0;flex:none;border-radius:50%;border:2px solid #151515;background:#151515;color:#fff;cursor:pointer')}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path><circle cx="12" cy="12" r="3"></circle></svg></button>
+    <button onClick=${() => this.lockAdmin()} title="Lock admin" aria-label="Lock admin" style=${css('display:flex;align-items:center;justify-content:center;width:38px;height:38px;padding:0;flex:none;border-radius:50%;border:2px solid var(--ink-300);background:#fff;color:var(--ink-900);cursor:pointer')}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 8 0v4"></path></svg></button>`;
   }
 
   renderAdmin() {
@@ -1350,7 +1366,7 @@ ${this.renderAdmin()}
             ${row('Take photo at Save', ['cameras', name, 'photo'], 'check')}
           </div>
         </div>
-        ${cl.live || A.preview ? h`<img class="admin-thumb" src=${camUrl(name) + '&watch=1'} alt="" />` : h`<div class="admin-thumb" style=${{padding:'0 12px', textAlign:'center'}}>${cl.error || 'No signal'}</div>`}
+        ${cl.live || A.preview ? h`<${LiveImg} className="admin-thumb" name=${name} watch=${true} every=${250} />` : h`<div class="admin-thumb" style=${{padding:'0 12px', textAlign:'center'}}>${cl.error || 'No signal'}</div>`}
         <span style=${css('font-size:13px;color:var(--ink-700)')}>${cl.live && cl.size ? 'Live at ' + cl.size[0] + ' × ' + cl.size[1] + (cl.size[0] < 1280 ? ' — low. Use the main stream.' : '') : 'Saved changes show here after Save settings.'}</span>
         <div class="admin-grid">
           <label class="admin-row">Type<select value=${c.type} onChange=${e => setType(name, e.target.value)}>${['USB','RTSP','HTTP','None'].map(o => h`<option key=${o} value=${o}>${o}</option>`)}</select></label>
