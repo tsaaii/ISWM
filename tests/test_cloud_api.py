@@ -126,8 +126,9 @@ def test_remote_view_end_to_end(tmp_path, monkeypatch):
     camsrv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Cam)
     threading.Thread(target=camsrv.serve_forever, daemon=True).start()
     s = Settings(str(tmp_path / "s.json"))
-    s.update({"cameras": {"front": {"type": "HTTP", "ip": "127.0.0.1", "port": str(camsrv.server_address[1]),
-                                    "endpoint": "/x.jpg"}, "back": {"type": "None"}},
+    cam = {"type": "HTTP", "ip": "127.0.0.1", "port": str(camsrv.server_address[1]), "endpoint": "/x.jpg"}
+    s.update({"cameras": {"front": {**cam, "label": "Front cam"}, "back": {"type": "None", "label": "Back cam"},
+                          "cam3": {**cam, "label": "Tipping floor"}},
               "remote": {"enabled": True, "relay_url": relay_url, "site_key": "plantkey", "poll_seconds": 10}})
     svc = Service(s, DB(str(tmp_path / "d.sqlite3")), start_devices=False)
     svc.cams.start()
@@ -137,16 +138,34 @@ def test_remote_view_end_to_end(tmp_path, monkeypatch):
         time.sleep(2)
         assert svc.remote.state == "waiting" and hits == []  # nobody watching: camera untouched, nothing sent
         sent_before = svc.remote.bytes
-        r = requests.get(relay_url + "/v1/sites/iswm-donthali/live/front.mjpg?key=viewkey&q=low", stream=True, timeout=40)
+        state_url = relay_url + "/v1/sites/iswm-donthali/live/state"
+        state = requests.get(state_url, headers={"X-API-Key": "viewkey"}).json()
+        # the names the admin gave the cameras reach the remote page
+        assert state["cams"] == [["front", "Front cam"], ["back", "Back cam"], ["cam3", "Tipping floor"]]
+        r = requests.get(relay_url + "/v1/sites/iswm-donthali/live/cam3.mjpg?key=viewkey&q=low", stream=True, timeout=40)
+        frames = r.iter_content(4096)
         buf = b""
-        for chunk in r.iter_content(4096):
+        for chunk in frames:
             buf += chunk
             if buf.count(b"--frame") >= 2:
                 break
-        r.close()
         assert b"Content-Type: image/jpeg" in buf and svc.remote.bytes > sent_before
-        state = requests.get(relay_url + "/v1/sites/iswm-donthali/live/state", headers={"X-API-Key": "viewkey"}).json()
+        # renamed while someone watches: the new name arrives with the next picture
+        c = svc.settings.get("cameras")
+        c["cam3"]["label"] = "Windrow yard"
+        svc.settings.replace("cameras", c)
+        svc.cams.configure(c)
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            next(frames)
+            state = requests.get(state_url, headers={"X-API-Key": "viewkey"}).json()
+            if ["cam3", "Windrow yard"] in state["cams"]:
+                break
+        r.close()
+        assert ["cam3", "Windrow yard"] in state["cams"]
         assert state["plant_online"] and state["weight"] is not None
+        page = requests.get(relay_url + "/live/iswm-donthali?key=viewkey").text
+        assert "buttons(s.cams)" in page
         assert requests.get(relay_url + "/v1/plant/iswm-donthali/wanted", headers={"X-Site-Key": "bad"}).status_code == 401
         deadline = time.time() + 30
         while svc.remote.state == "sending" and time.time() < deadline:
