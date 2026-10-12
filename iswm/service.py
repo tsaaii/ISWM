@@ -171,7 +171,7 @@ class Service:
             all_cams = self.settings.get("cameras")
             for name, v in cams.items():
                 if name in all_cams:
-                    for k in ("ip", "port"):
+                    for k in ("ip", "port", "label"):
                         if k in v:
                             all_cams[name][k] = str(v[k] or "").strip()
             self.settings.replace("cameras", normalize_cameras(all_cams))

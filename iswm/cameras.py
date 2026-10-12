@@ -222,6 +222,11 @@ class Camera:
             cap.release()
 
 
+def _video(cfg):
+    """The settings that change how the camera is opened (not its name or screen choices)."""
+    return {k: v for k, v in cfg.items() if k not in ("label", "show", "photo")}
+
+
 def _strip_auth(url):
     """http://user:pw@host/... -> http://host/... (credentials go through the auth handler)."""
     scheme, _, rest = url.partition("://")
@@ -294,8 +299,10 @@ class Cameras:
         for name, c in self.cams.items():
             if name not in old:
                 c.start()
-            elif old[name] != dict(cfg[name]):
+            elif _video(old[name]) != _video(cfg[name]):  # a new name alone doesn't restart the camera
                 c.restart(cfg[name])
+            else:
+                c.cfg = dict(cfg[name])
 
     def status(self):
         """Every camera in screen order (front, back, then added ones)."""

@@ -121,6 +121,8 @@ See the cameras and the live weight from another city, with nothing opened on th
    ```
    `--max-instances 1` is needed because the relay passes pictures through memory.
 2. In ISWM admin → *Remote camera view*: tick **Turn on**, paste the relay address (`https://iswm-api-….run.app`) and the site key, then save.
+
+**Camera names.** Each camera's *Name on screen* (Admin → Cameras, or 7 Settings with admin unlocked), for example *Front cam*, *Back cam*, *Tipping floor*, *Windrow yard*, is sent to the relay. The remote page shows one button per camera with that name, plus **All**. A rename shows up on the remote page within seconds, even while someone is watching. The names are also saved to Firestore (`sites/{site}` → `cameras`) at each sync.
 3. Open `https://iswm-api-….run.app/live/iswm-donthali?key=VIEWER-KEY` on any computer or phone. Choose Front, Back or Both, and Low data, Normal or Sharper.
 
 | | Internet used at the plant |

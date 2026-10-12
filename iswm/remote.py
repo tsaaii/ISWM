@@ -69,9 +69,8 @@ class RemoteView:
                 self._stop.wait(min(300, 4 * max(10, int(cfg.get("poll_seconds") or 20))))
 
     def ask(self, cfg):
-        cams = json.dumps([[n, self.svc.cams.label(n)] for n in self.svc.cams.ordered()])
-        r = self._http().get(self._base(cfg) + "/wanted", headers={"X-Site-Key": cfg["site_key"], "X-Cams": cams},
-                             timeout=15)
+        r = self._http().get(self._base(cfg) + "/wanted", headers={"X-Site-Key": cfg["site_key"],
+                                                                     "X-Cams": self.cam_names()}, timeout=15)
         self.bytes += len(r.content) + 300  # + request and headers, roughly
         if r.status_code == 401:
             self.state, self.message = "error", "Relay refused the site key."
@@ -79,6 +78,11 @@ class RemoteView:
         r.raise_for_status()
         self.message = None
         return r.json()
+
+    def cam_names(self):
+        """Camera ids and the names the admin gave them (e.g. "Tipping floor"), so the remote page shows them.
+        A few hundred bytes; sent with every question and picture so a rename shows up within seconds."""
+        return json.dumps([[n, self.svc.cams.label(n)] for n in self.svc.cams.ordered()])
 
     def picture(self, cam, width, quality):
         frame = cam.frame()
@@ -105,6 +109,7 @@ class RemoteView:
                 if jpg is None:
                     continue
                 wb = self.svc.wb.live()
+                headers["X-Cams"] = self.cam_names()
                 headers["X-Weight"] = json.dumps({"connected": wb["connected"], "weight": wb["weight"],
                                                   "stable": wb["stable"]})
                 r = self._http().post(self._base(cfg) + "/frame/" + name, data=jpg, headers=headers, timeout=15)

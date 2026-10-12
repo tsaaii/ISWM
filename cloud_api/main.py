@@ -182,6 +182,19 @@ def live(site):
 CAM_NAME = re.compile(r"front|back|cam[3-9]")
 
 
+def take_cam_names(st):
+    """The plant sends its camera list with the names the admin gave them (Front cam, Tipping floor, ...)."""
+    try:
+        cams = json.loads(request.headers.get("X-Cams") or "null")
+    except ValueError:
+        return
+    if isinstance(cams, list):
+        got = [[str(c[0]), str(c[1]).strip()[:24] or str(c[0])] for c in cams[:8]
+               if isinstance(c, list) and len(c) == 2 and CAM_NAME.fullmatch(str(c[0]))]
+        if got:
+            st["cams"] = got
+
+
 def cam_ok(cam):
     if not CAM_NAME.fullmatch(cam or ""):
         abort(404, "No such camera.")
@@ -205,13 +218,7 @@ def plant_wanted(site):
     plant_ok(site)
     st = live(site)
     st["seen"] = time.time()
-    try:  # the plant's camera list, so viewers see the right buttons
-        cams = json.loads(request.headers.get("X-Cams") or "null")
-        if isinstance(cams, list):
-            st["cams"] = [[str(c[0]), str(c[1])[:24]] for c in cams[:8]
-                          if isinstance(c, list) and len(c) == 2 and CAM_NAME.fullmatch(str(c[0]))]
-    except ValueError:
-        pass
+    take_cam_names(st)
     w, q, f = QUALITY[st["q"]]
     return jsonify({"cams": wanted(st), "width": w, "quality": q, "fps": f})
 
@@ -226,6 +233,7 @@ def plant_frame(site, cam):
         abort(400, "Send a JPEG.")
     st = live(site)
     st["seen"] = time.time()
+    take_cam_names(st)
     try:
         st["weight"] = json.loads(request.headers.get("X-Weight") or "null")
     except ValueError:
@@ -307,11 +315,15 @@ main{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:1
 var key=new URLSearchParams(location.search).get('key')||'', site='{{SITE}}', cams=['front'], q='normal', on=true, list=null, names={};
 function api(p){return fetch('/v1/sites/'+site+p,{headers:{'X-API-Key':key}}).then(function(r){return r.json()})}
 function draw(){var m=document.getElementById('cams');m.innerHTML='';if(!on){m.innerHTML='<div class="cam">Stopped. Choose a camera to watch again.</div>';return}
- cams.forEach(function(c){var d=document.createElement('div');d.className='cam';d.innerHTML='<b></b><span>Waiting for the plant… (up to 20 s)</span>';d.querySelector('b').textContent=names[c]||c;
+ cams.forEach(function(c){var d=document.createElement('div');d.className='cam';d.innerHTML='<b></b><span>Waiting for the plant… (up to 20 s)</span>';var bb=d.querySelector('b');bb.dataset.c=c;bb.textContent=names[c]||c;
  var i=new Image();i.onload=function(){var sp=d.querySelector('span');if(sp)sp.remove()};
  i.onerror=function(){setTimeout(draw,5000)};i.src='/v1/sites/'+site+'/live/'+c+'.mjpg?key='+encodeURIComponent(key)+'&q='+q+'&t='+Date.now();d.appendChild(i);m.appendChild(d)})}
 function buttons(l){var k=JSON.stringify(l);if(k===list)return;list=k;var p=document.getElementById('pick');p.innerHTML='';
- l.forEach(function(c){names[c[0]]=c[1]});var opts=l.map(function(c){return [c[0],c[1]]});if(l.length>1)opts.push([l.map(function(c){return c[0]}).join(','),'All']);
+ l.forEach(function(c){names[c[0]]=c[1]});
+ // the plant renamed or removed a camera: update the names on screen, and leave a camera that is gone
+ document.querySelectorAll('.cam b[data-c]').forEach(function(x){x.textContent=names[x.dataset.c]||x.dataset.c});
+ var ids=l.map(function(c){return c[0]}),keep=cams.filter(function(c){return ids.indexOf(c)>=0});
+ if(!keep.length&&ids.length){cams=[ids[0]];draw()}else if(keep.length<cams.length){cams=keep;draw()}var opts=l.map(function(c){return [c[0],c[1]]});if(l.length>1)opts.push([l.map(function(c){return c[0]}).join(','),'All']);
  opts.forEach(function(o){var b=document.createElement('button');b.dataset.cams=o[0];b.textContent=o[1];b.className=o[0]===cams.join(',')?'on':'';
  b.onclick=function(){cams=o[0].split(',');on=true;p.querySelectorAll('button').forEach(function(x){x.className=x===b?'on':''});draw()};p.appendChild(b)})}
 document.querySelectorAll('[data-q]').forEach(function(b){b.onclick=function(){q=b.dataset.q;

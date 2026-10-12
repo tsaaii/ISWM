@@ -199,6 +199,7 @@ class CloudSync:
         writes.append({"update": {"name": base + "sites/%s" % site,
                                   "fields": fs_fields({"name": self.settings.get("site_name"),
                                                        "company": self.settings.get("agency_name"),
+                                                       "cameras": self.camera_names(),
                                                        "last_sync": time.strftime("%Y-%m-%d %H:%M:%S")})}})
         body = json.dumps({"writes": writes}, default=str)
         try:
@@ -222,6 +223,12 @@ class CloudSync:
         self.last_sent = time.strftime("%H:%M")
         self.state, self.message = ("synced", None) if len(latest) <= MAX_WRITES else ("offline", "More to send")
         logging.info("sync: sent %d records, %d bytes", len(writes), len(body))
+
+    def camera_names(self):
+        """[{id, name}] in screen order, e.g. {"id": "cam3", "name": "Tipping floor"}."""
+        from .settings import camera_ids
+        cams = self.settings.get("cameras") or {}
+        return [{"id": k, "name": cams[k].get("label") or k} for k in camera_ids(cams)]
 
     def _upload_photo(self, session, cfg, site, path, mode):
         data = small_jpeg(path) if mode == "small" else open(path, "rb").read()

@@ -1169,8 +1169,8 @@ ${s.tab==='in' && h`
     const port = S.port != null ? S.port : v.comPort;
     const ports = [...new Set([...(v.ports || []), ...(v.comPort ? [v.comPort] : [])])];
     const ids = camIds(v.cams), edits = S.cams || {};
-    const camVal = (n, k) => (edits[n] && edits[n][k] != null) ? edits[n][k] : ((v.cams[n].addr || '').split(':')[k === 'ip' ? 0 : 1] || '');
-    const setCam = (n, k, val) => setS({cams:{...edits, [n]:{ip:camVal(n,'ip'), port:camVal(n,'port'), ...(edits[n] || {}), [k]:val}}, msg:null, err:null});
+    const camVal = (n, k) => (edits[n] && edits[n][k] != null) ? edits[n][k] : k === 'label' ? v.cams[n].label : ((v.cams[n].addr || '').split(':')[k === 'ip' ? 0 : 1] || '');
+    const setCam = (n, k, val) => setS({cams:{...edits, [n]:{...(edits[n] || {}), [k]:val}}, msg:null, err:null});
     const refresh = () => { setS({msg:'Looking for COM ports…', err:null}); api('settings_view').then(view => setS({view, msg:(view.ports.length ? 'Found ' + view.ports.join(', ') : 'No COM ports found. Check the USB-serial cable.')})).catch(e => setS({err:e.message})); };
     const save = () => { setS({busy:true, err:null, msg:null}); api('settings_save', {comPort: port !== v.comPort ? port : null, cams: S.cams})
       .then(view => { setS({view, port:null, cams:null, busy:false, msg:'Saved. The weighbridge and cameras restart now.'}); this.pollLive(); })
@@ -1211,13 +1211,13 @@ ${s.tab==='in' && h`
 
   <div style=${css('flex:1;min-width:0;display:flex;flex-direction:column;border:2px solid var(--ink-300);border-radius:20px;overflow:hidden')}>
     <div style=${css('display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--ink-200)')}>${badge(74, slate, '#fff')}<span style=${css('font-size:20px;color:var(--ink-900)')}>Cameras</span>
-      <span style=${css('margin-left:auto;font-size:14px;color:var(--ink-700)')}>${admin ? 'Type a new IP or port, then Save.' : 'Ask the admin to change an address.'}</span></div>
+      <span style=${css('margin-left:auto;font-size:14px;color:var(--ink-700)')}>${admin ? 'Change a name, IP or port, then Save.' : 'Ask the admin to change a name or address.'}</span></div>
     <div style=${css('display:grid;grid-template-columns:minmax(0,1.2fr) 70px minmax(0,1.3fr) 110px 120px;gap:8px;padding:6px 16px;background:#151515;color:#fff;font-size:14px;font-weight:700')}>
       <span>Camera</span><span>Type</span><span>IP address : port</span><span>Status</span><span></span></div>
     <div style=${css('flex:1;min-height:0;overflow-y:auto')}>
       ${ids.map((n, i) => { const c = v.cams[n], ip = c.type === 'RTSP' || c.type === 'HTTP'; return h`
         <div key=${n} style=${css('display:grid;grid-template-columns:minmax(0,1.2fr) 70px minmax(0,1.3fr) 110px 120px;gap:8px;align-items:center;padding:6px 16px;border-bottom:1px solid var(--ink-200);font-size:16px;color:var(--ink-900)')}>
-          <span style=${css('display:flex;flex-direction:column;min-width:0')}><b style=${css('white-space:nowrap;overflow:hidden;text-overflow:ellipsis')}>${c.label}</b><span style=${css('font-size:13px;color:var(--ink-700)')}>${(n === 'front' ? 'Front' : n === 'back' ? 'Back' : 'Camera ' + n.slice(3)) + (c.show === false ? ' · hidden' : '') + (c.photo === false ? ' · no photo' : '')}</span></span>
+          <span style=${css('display:flex;flex-direction:column;min-width:0')}>${admin ? h`<input value=${camVal(n,'label')} maxLength=${24} title="Name shown on screen, on photos and on the remote view" onChange=${e => setCam(n, 'label', e.target.value)} style=${css(inp + ';font-weight:700;height:34px')} />` : h`<b style=${css('white-space:nowrap;overflow:hidden;text-overflow:ellipsis')}>${c.label}</b>`}<span style=${css('font-size:13px;color:var(--ink-700)')}>${(n === 'front' ? 'Front' : n === 'back' ? 'Back' : 'Camera ' + n.slice(3)) + (c.show === false ? ' · hidden' : '') + (c.photo === false ? ' · no photo' : '')}</span></span>
           <span style=${css('font-size:15px;color:var(--ink-700)')}>${c.type === 'NONE' ? '—' : c.type}</span>
           ${admin && ip ? h`<span style=${css('display:grid;grid-template-columns:minmax(0,1fr) 70px;gap:6px')}><input value=${camVal(n,'ip')} placeholder="192.168.1.64" onChange=${e => setCam(n, 'ip', e.target.value.trim())} style=${css(inp)} /><input value=${camVal(n,'port')} placeholder="554" onChange=${e => setCam(n, 'port', e.target.value.replace(/\D/g,''))} style=${css(inp)} /></span>`
             : h`<span style=${css('font-family:Consolas,monospace;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis')}>${c.addr}</span>`}
