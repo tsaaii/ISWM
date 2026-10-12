@@ -69,7 +69,9 @@ class RemoteView:
                 self._stop.wait(min(300, 4 * max(10, int(cfg.get("poll_seconds") or 20))))
 
     def ask(self, cfg):
-        r = self._http().get(self._base(cfg) + "/wanted", headers={"X-Site-Key": cfg["site_key"]}, timeout=15)
+        cams = json.dumps([[n, self.svc.cams.label(n)] for n in self.svc.cams.ordered()])
+        r = self._http().get(self._base(cfg) + "/wanted", headers={"X-Site-Key": cfg["site_key"], "X-Cams": cams},
+                             timeout=15)
         self.bytes += len(r.content) + 300  # + request and headers, roughly
         if r.status_code == 401:
             self.state, self.message = "error", "Relay refused the site key."

@@ -129,6 +129,10 @@ class DB:
         self.conn.execute("PRAGMA synchronous=FULL")  # every save is on disk before Save says done
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.executescript(SCHEMA)
+        for table in ("entries", "tares"):  # photos from added cameras: {"cam3": path, ...}
+            cols = [r[1] for r in self.conn.execute("PRAGMA table_info(%s)" % table)]
+            if "extra_photos" not in cols:
+                self.conn.execute("ALTER TABLE %s ADD COLUMN extra_photos TEXT" % table)
         for name, start in (("in", 1), ("out", 1), ("batch", 1), ("tare", 1)):
             self.conn.execute("INSERT OR IGNORE INTO counters VALUES (?, ?)", (name, start))
 
@@ -280,7 +284,8 @@ class DB:
                                       (weight, max(0.0, p["gross_kg"] - weight), t, p["id"]))
                     self._queue("entry", p["id"], "Inward complete")
                 self.conn.execute(
-                    "INSERT INTO tares VALUES (?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO tares(id, vkey, vno, tare_kg, completes, operator, created_at, front_photo, back_photo) "
+                    "VALUES (?,?,?,?,?,?,?,?,?)",
                     (tid, key, vno, weight, ",".join(p["id"] for p in pend) or None, operator, t,
                      photos[0], photos[1]))
                 self._queue("tare", tid, "Empty weight")
@@ -292,10 +297,12 @@ class DB:
                 "completed": [self.entry(p["id"]) for p in pend]}
 
     def set_photos(self, table, id_, photos):
+        """photos: {camera: path}. Front and back have their own columns, the rest go in extra_photos."""
         assert table in ("entries", "tares")
+        extra = {k: v for k, v in photos.items() if k not in ("front", "back") and v}
         with self.lock:
-            self.conn.execute("UPDATE %s SET front_photo=?, back_photo=? WHERE id=?" % table,
-                              (photos[0], photos[1], id_))
+            self.conn.execute("UPDATE %s SET front_photo=?, back_photo=?, extra_photos=? WHERE id=?" % table,
+                              (photos.get("front"), photos.get("back"), json.dumps(extra) if extra else None, id_))
 
     def entry(self, id_):
         return self.one("SELECT * FROM entries WHERE id=?", (id_,))

@@ -1,4 +1,4 @@
-"""Live view for other computers: a read-only page with both cameras, the live
+"""Live view for other computers: a read-only page with the cameras, the live
 weight and today's trips. Off until the admin turns it on and sets a viewer
 password.
 
@@ -11,6 +11,7 @@ Open from another PC on the same network:  http://<plant-pc-ip>:8090
 User name: viewer   Password: the one set in admin.
 """
 import base64
+import html
 import http.server
 import json
 import logging
@@ -22,7 +23,7 @@ import datetime as dt
 from .server import stream_mjpeg
 from .settings import check_password
 
-MAX_STREAMS = 8
+MAX_STREAMS = 16
 
 PAGE = """<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>%(site)s · live</title>
@@ -46,8 +47,7 @@ th{font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted
 </style></head><body>
 <header><h1>%(site)s</h1><span>%(agency)s · live view</span><span id="wb" class="pill">…</span></header>
 <main><section class="cams">
-<div class="cam"><img src="cam/front.mjpg" alt="Front camera" onerror="retry(this)"><b>Front camera</b></div>
-<div class="cam"><img src="cam/back.mjpg" alt="Back camera" onerror="retry(this)"><b>Back camera</b></div>
+%(cams)s
 </section><section>
 <div class="card"><div class="small">Weighbridge</div><div><span id="w" class="big">—</span> kg</div><div id="st" class="small"></div></div>
 <div class="card tot"><div><div class="small">Inward today</div><div id="tin" style="font-size:22px">—</div></div>
@@ -160,7 +160,11 @@ class LiveView:
                                       {"WWW-Authenticate": 'Basic realm="ISWM live view (user: viewer)"'})
                 path = self.path.split("?")[0]
                 if path in ("/", "/index.html"):
-                    page = PAGE % {"site": svc.settings.get("site_name"), "agency": svc.settings.get("agency_name")}
+                    cams = "\n".join('<div class="cam"><img src="cam/%s.mjpg" alt="%s" onerror="retry(this)"><b>%s</b></div>'
+                                      % (n, html.escape(svc.cams.label(n)), html.escape(svc.cams.label(n)))
+                                      for n in svc.cams.ordered())
+                    page = PAGE % {"site": html.escape(svc.settings.get("site_name") or ""), "cams": cams,
+                                   "agency": html.escape(svc.settings.get("agency_name") or "")}
                     return self._send(200, page.encode())
                 if path == "/api/live":
                     return self._send(200, json.dumps(svc.wb.live()).encode(), "application/json")

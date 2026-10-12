@@ -1,4 +1,4 @@
-"""Front and back cameras.
+"""Plant cameras: front and back, plus up to six more the admin adds.
 
 Capture is adapted from adex_lite's camera.py (USB index, RTSP or HTTP
 camera, reconnect on failure) and the photo watermark from its
@@ -35,7 +35,7 @@ except ImportError:  # app still runs; cameras show "No signal"
     cv2 = None
     np = None
 
-from .settings import camera_urls
+from .settings import camera_address, camera_urls
 
 STALE_AFTER_S = 5.0
 PREVIEW_WIDTH = 960
@@ -256,8 +256,26 @@ def watermark(image, lines, ticket_id=None):
 
 
 class Cameras:
+    """All cameras of the plant: front and back, plus any the admin added."""
+
     def __init__(self, cfg):
-        self.cams = {name: Camera(name, cfg.get(name, {})) for name in ("front", "back")}
+        self.cams = {}
+        self._cfg = {}
+        self.configure(cfg)
+
+    def configure(self, cfg):
+        from .settings import camera_ids
+        self._cfg = dict(cfg)
+        for name in camera_ids(cfg):
+            if name not in self.cams:
+                self.cams[name] = Camera(name, cfg[name])
+
+    def ordered(self):
+        from .settings import camera_ids
+        return [n for n in camera_ids(self._cfg) if n in self.cams]
+
+    def label(self, name):
+        return (self._cfg.get(name) or {}).get("label") or name.capitalize() + " camera"
 
     def start(self):
         for c in self.cams.values():
@@ -268,45 +286,63 @@ class Cameras:
             c.stop()
 
     def restart(self, cfg):
+        """Apply new settings: restart changed cameras, start new ones, stop removed ones."""
+        for name in [n for n in self.cams if n not in cfg]:
+            self.cams.pop(name).stop()
+        old = {n: dict(c.cfg) for n, c in self.cams.items()}
+        self.configure(cfg)
         for name, c in self.cams.items():
-            c.restart(cfg.get(name, {}))
+            if name not in old:
+                c.start()
+            elif old[name] != dict(cfg[name]):
+                c.restart(cfg[name])
 
     def status(self):
-        return {name: {"live": c.live(), "error": c.error, "size": c.size, "on": c.wanted()}
-                for name, c in self.cams.items()}
+        """Every camera in screen order (front, back, then added ones)."""
+        out = {}
+        for name in self.ordered():
+            c, cfg = self.cams[name], self._cfg.get(name) or {}
+            out[name] = {"live": c.live(), "error": c.error, "size": c.size, "on": c.wanted(),
+                         "label": self.label(name), "show": cfg.get("show", True), "photo": cfg.get("photo", True),
+                         "type": (cfg.get("type") or "USB").upper(), "addr": camera_address(cfg)}
+        return out
 
-    def demand(self, seconds):
-        for c in self.cams.values():
-            c.demand(seconds)
+    def demand(self, seconds, names=None):
+        for n, c in self.cams.items():
+            if names is None or n in names:
+                c.demand(seconds)
+
+    def _photo_cams(self):
+        return [n for n in self.ordered() if (self._cfg.get(n) or {}).get("photo", True)]
 
     def demand_for_photo(self, seconds):
         """A vehicle was picked: warm up only cameras that need the video stream for their photo.
         Cameras with a snapshot endpoint give the photo directly, with no stream at all."""
-        for c in self.cams.values():
+        for n in self._photo_cams():
+            c = self.cams[n]
             if not camera_urls(c.cfg)[1]:
                 c.demand(seconds)
 
     def grab(self):
-        """Best pictures from both cameras, taken at the same moment (None where a camera is down)."""
+        """Best pictures from the photo cameras, taken at the same moment (None where a camera is down)."""
         out = {}
-        threads = [threading.Thread(target=lambda n=n, c=c: out.__setitem__(n, c.photo())) for n, c in self.cams.items()]
+        names = self._photo_cams()
+        threads = [threading.Thread(target=lambda n=n: out.__setitem__(n, self.cams[n].photo())) for n in names]
         for t in threads:
             t.start()
         for t in threads:
             t.join(timeout=12)
-        return {n: out.get(n) for n in self.cams}
+        return {n: out.get(n) for n in names}
 
-    @staticmethod
-    def write(frames, folder, stem, lines, ticket_id):
-        """Save grabbed frames as watermarked JPEGs. Returns (front_path, back_path)."""
-        out = []
-        for name in ("front", "back"):
-            frame = frames.get(name)
+    def write(self, frames, folder, stem, lines, ticket_id):
+        """Save grabbed frames as watermarked JPEGs. Returns {camera: path or None}."""
+        out = {}
+        for name, frame in frames.items():
             if frame is None or cv2 is None:
-                out.append(None)
+                out[name] = None
                 continue
             path = os.path.join(folder, "%s_%s.jpg" % (stem, name))
-            img = watermark(frame, lines + [name.capitalize() + " camera"], ticket_id)
+            img = watermark(frame, lines + [self.label(name)], ticket_id)
             ok = cv2.imwrite(path, img, [int(cv2.IMWRITE_JPEG_QUALITY), PHOTO_QUALITY])
-            out.append(path if ok else None)
-        return tuple(out)
+            out[name] = path if ok else None
+        return out

@@ -6,6 +6,7 @@ shown to the operator as-is, so they are written in the app's plain voice.
 import base64
 import binascii
 import csv
+import json
 import datetime as dt
 import os
 import random
@@ -17,8 +18,8 @@ from . import __version__, paths
 from .cameras import Cameras
 from .cloud import CloudSync, slug
 from .db import DB, MATERIALS, RECYC, IN_TYPES, RuleError, norm_vno, yymm
-from .settings import (BRANDS, Settings, check_pin, hash_password, hash_pin, password_problem,
-                       pin_problem)
+from .settings import (BRANDS, MAX_CAMERAS, Settings, check_pin, hash_password, hash_pin, normalize_cameras,
+                       password_problem, pin_problem)
 from .liveview import LiveView, lan_addresses
 from .maintenance import Maintenance
 from .remote import RemoteView
@@ -142,11 +143,40 @@ class Service:
     def vehicle_status(self, flow, vno):
         return {"status": self.db.vehicle_status(flow, norm_vno(vno))}
 
-    def camera_watch(self, on=True):
-        """The operator has "View live" on; the screen repeats this every few seconds while it is."""
+    def camera_watch(self, on=True, names=None):
+        """The operator has "View live" on; the screen repeats this every few seconds while it is.
+        ``names``: only these cameras (e.g. the one being checked on the Settings screen)."""
         if on:
-            self.cams.demand(20)
+            self.cams.demand(20, names)
         return {}
+
+    # settings screen (everyone can look; only the admin can change) ----------
+    def settings_view(self):
+        wb = self.settings.get("weighbridge")
+        return {"admin": self.admin_active(), "ports": list_ports(), "comPort": wb.get("com_port") or "",
+                "simulate": bool(wb.get("simulate")), "wb": {**self.wb.live(), **self.wb.debug()},
+                "cams": self.cams.status(), "version": __version__}
+
+    def settings_save(self, comPort=None, cams=None):
+        """COM port and camera addresses, from the Settings screen. Admin only."""
+        self._admin()
+        if comPort is not None:
+            wb = self.settings.get("weighbridge")
+            wb["com_port"] = str(comPort).strip()
+            if wb["com_port"]:
+                wb["simulate"] = False
+            self.settings.replace("weighbridge", wb)
+            self.wb.restart(wb)
+        if cams:
+            all_cams = self.settings.get("cameras")
+            for name, v in cams.items():
+                if name in all_cams:
+                    for k in ("ip", "port"):
+                        if k in v:
+                            all_cams[name][k] = str(v[k] or "").strip()
+            self.settings.replace("cameras", normalize_cameras(all_cams))
+            self.cams.restart(self.settings.get("cameras"))
+        return self.settings_view()
 
     def vehicle_picked(self, flow, vno):
         """Called when the operator picks a vehicle. Cameras start so the photo is ready at Save.
@@ -189,7 +219,7 @@ class Service:
                  time.strftime("%d-%m-%Y %H:%M:%S") + " - " + what]
         photos = self.cams.write(frames, folder, id_, lines, id_)
         self.db.set_photos(table, id_, photos)
-        return sum(1 for p in photos if p)
+        return sum(1 for p in photos.values() if p)
 
     def save_in(self, vno, source, type):
         op, gross = self._op(), self._weight()
@@ -440,16 +470,26 @@ class Service:
         self.cloud.kick()
         return r
 
+    def _photo_map(self, entry_id):
+        r = self.db.entry(entry_id) or self.db.one("SELECT * FROM tares WHERE id=?", (entry_id,))
+        if not r:
+            return {}
+        out = {"front": r.get("front_photo"), "back": r.get("back_photo")}
+        try:
+            out.update(json.loads(r.get("extra_photos") or "{}"))
+        except ValueError:
+            pass
+        return {k: v for k, v in out.items() if v}
+
     def photo_path(self, entry_id, which):
         """Saved photo of an entry or tare record, if it is still on this PC."""
-        if which not in ("front", "back"):
-            return None
-        r = self.db.entry(entry_id) or self.db.one("SELECT * FROM tares WHERE id=?", (entry_id,))
-        p = r and r.get(which + "_photo")
+        p = self._photo_map(entry_id).get(which)
         return p if p and os.path.isfile(p) else None
 
     def entry_history(self, id):
-        return {"edits": self.db.edits(id), "photos": {w: bool(self.photo_path(id, w)) for w in ("front", "back")}}
+        photos = [{"cam": k, "label": self.cams.label(k), "here": os.path.isfile(v)}
+                  for k, v in self._photo_map(id).items()]
+        return {"edits": self.db.edits(id), "photos": photos}
 
     def admin_run_cleanup(self):
         self._admin()
@@ -471,6 +511,12 @@ class Service:
         allowed = {"site_name", "agency_name", "weighbridge", "cameras", "cloud", "reports_folder",
                    "outward_destinations", "retention", "live_view", "remote"}
         patch = {k: v for k, v in (patch or {}).items() if k in allowed}
+        if "cameras" in patch:  # the whole list is replaced so removed cameras really go
+            cams = normalize_cameras(patch.pop("cameras"))
+            if len(cams) > MAX_CAMERAS:
+                raise RuleError("At most %d cameras." % MAX_CAMERAS)
+            self.settings.replace("cameras", cams)
+            self.cams.restart(cams)
         if "cloud" in patch:
             c = dict(patch["cloud"])
             c["sync_minutes"] = min(60, max(0, int(c.get("sync_minutes") or 0)))
@@ -548,8 +594,6 @@ class Service:
             self.settings.update(patch)
         if "weighbridge" in patch:
             self.wb.restart(self.settings.get("weighbridge"))
-        if "cameras" in patch:
-            self.cams.restart(self.settings.get("cameras"))
         if "cloud" in patch:
             self.cloud.kick()
         if "live_view" in patch:

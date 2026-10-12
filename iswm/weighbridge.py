@@ -43,6 +43,9 @@ class Weighbridge:
         self._thread = None
         self._sim = {"from": 0.0, "to": 0.0, "t0": 0.0}
         self.error = None
+        self.seq = 0  # readings received since start; the screen blinks when it moves
+        self.raw = ""  # last line from the indicator, for the tech team
+        self.raw_at = 0.0
         self.configure(cfg)
 
     def configure(self, cfg):
@@ -87,6 +90,7 @@ class Weighbridge:
     def _push(self, w):
         with self._lock:
             self._readings.append((time.monotonic(), w))
+            self.seq += 1
 
     def live(self):
         """Current weight and whether it has settled."""
@@ -94,13 +98,23 @@ class Weighbridge:
         with self._lock:
             readings = list(self._readings)
         if not readings or t - readings[-1][0] > STALE_AFTER_S:
-            return {"connected": False, "weight": 0, "stable": False, "error": self.error}
+            return {"connected": False, "weight": 0, "stable": False, "error": self.error, "seq": self.seq}
         window = float(self.cfg.get("stable_seconds") or 2.0)
         tol = float(self.cfg.get("stable_tolerance_kg") or 10)
         recent = [w for (rt, w) in readings if t - rt <= window]
         covered = t - window >= readings[0][0] - 0.25
         stable = covered and len(recent) >= 2 and (max(recent) - min(recent)) <= tol
-        return {"connected": True, "weight": round(readings[-1][1]), "stable": stable, "error": None}
+        return {"connected": True, "weight": round(readings[-1][1]), "stable": stable, "error": None, "seq": self.seq}
+
+    def debug(self):
+        """For the Settings screen: what is coming in on the port."""
+        t = time.monotonic()
+        with self._lock:
+            n = sum(1 for (rt, _) in self._readings if t - rt <= 5)
+        return {"port": "Simulator" if self.cfg.get("simulate") else (self.cfg.get("com_port") or ""),
+                "rate": round(n / 5.0, 1), "raw": self.raw if t - self.raw_at < 10 else "",
+                "rawAge": round(t - self.raw_at, 1) if self.raw_at else None, "error": self.error,
+                "running": bool(self._thread and self._thread.is_alive())}
 
     def capture(self):
         """The weight to save, or None if it is not settled above the minimum."""
@@ -131,6 +145,7 @@ class Weighbridge:
                     self.error = None
                 line = conn.readline().decode("ascii", errors="ignore").strip()
                 if line:
+                    self.raw, self.raw_at = line[:80], time.monotonic()
                     w = self.parse(line)
                     if w is not None:
                         self._push(w)

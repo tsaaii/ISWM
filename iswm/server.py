@@ -23,7 +23,8 @@ API = {"boot", "login", "logout", "live", "state", "vehicle_status", "vehicle_pi
        "save_in", "save_out", "save_tare", "save_batch", "save_sample", "ask_correction", "retry_sync",
        "set_shifts", "report", "export_csv", "open_folder", "toggle_full", "setup", "admin_login", "admin_view",
        "admin_save", "admin_lock", "admin_set_logo", "admin_clear_logo", "admin_fix_entry",
-       "admin_rename_vehicle", "admin_run_cleanup", "entry_history", "export_trips", "camera_watch"}
+       "admin_rename_vehicle", "admin_run_cleanup", "entry_history", "export_trips", "camera_watch",
+       "settings_view", "settings_save"}
 MAX_BODY = 4 * 1024 * 1024
 
 mimetypes.add_type("application/javascript", ".js")

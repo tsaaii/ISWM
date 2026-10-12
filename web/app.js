@@ -17,6 +17,12 @@ async function api(name, args) {
   return j.data;
 }
 const camUrl = name => '/cam/' + name + '.mjpg?t=' + encodeURIComponent(TOKEN);
+// Cameras in screen order: front, back, then the added ones (cam3, cam4, ...)
+const MAX_CAMS = 8;
+const BASE_W = 1366, BASE_H = 620;  // the design's screen size
+const ZOOMS = [0.75, 1, 1.5, 2, 2.5, 3, 3.5, 4];
+const zoomStep = (z, dir) => { let i = ZOOMS.findIndex(x => x >= z - 0.01); if (i < 0) i = ZOOMS.length - 1; return ZOOMS[Math.min(ZOOMS.length - 1, Math.max(0, i + dir))]; };
+const camIds = cams => { const k = Object.keys(cams || {}); return ['front','back'].filter(x => k.includes(x)).concat(k.filter(x => x !== 'front' && x !== 'back').sort((a, b) => a.length - b.length || (a < b ? -1 : 1))); };
 
 // The prototype writes styles as CSS strings; React wants objects.
 const cssCache = new Map();
@@ -37,8 +43,8 @@ function css(str) {
 }
 
 // --- constants from the prototype ----------------------------------------------
-const C = {1:'#1B8A3A',2:'#1D5FC2',3:'#7B4A1F',4:'#F2C200',5:'#151515',6:'#E0620B'};
-const FG = {1:'#fff',2:'#fff',3:'#fff',4:'#151515',5:'#fff',6:'#fff'};
+const C = {1:'#1B8A3A',2:'#1D5FC2',3:'#7B4A1F',4:'#F2C200',5:'#151515',6:'#E0620B',7:'#4A5A52'};
+const FG = {1:'#fff',2:'#fff',3:'#fff',4:'#151515',5:'#fff',6:'#fff',7:'#fff'};
 const RED = '#C62828', YEL = '#F2C200', GRN = '#1B8A3A';
 const IN_TYPES = ['Mixed','Wet','Dry'];
 const MATERIALS = ['Compost','RDF bales','Recyclables','Non recyclables','Metal scrap','Glass scrap','Disposal'];
@@ -63,7 +69,7 @@ const isoDay = d => d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0
 const shortDay = iso => { const d = new Date(iso + 'T00:00:00'); return d.toLocaleDateString('en-IN', {day:'numeric', month:'short'}); };
 const blank = () => ({typed:'', veh:null, source:'Residential', type:'Mixed', material:null, dest:'', manual:false, manualKg:'', reason:null, wbTried:false});
 const EMPTY_SRV = {vehicles:[], pending:[], nextIn:1, nextOut:1, yymm:'', dests:[], today:[], queue:[], trips:[], sampleDue:false, month:'', shifts:{count:3, starts:['06:00','14:00','22:00']}};
-const EMPTY_LIVE = {admin:false, wb:{connected:false, weight:0, stable:false}, simulate:false, minKg:10, sync:{state:'offline', queued:0}, cams:{front:{live:false}, back:{live:false}}};
+const EMPTY_LIVE = {admin:false, wb:{connected:false, weight:0, stable:false}, simulate:false, minKg:10, sync:{state:'offline', queued:0}, cams:{front:{live:false, label:'Front camera'}, back:{live:false, label:'Back camera'}}};
 
 // A small coloured code badge, used everywhere in the prototype.
 const badge = (code, bg, fg, extra) => h`<span style=${css('display:inline-flex;align-items:center;justify-content:center;min-width:30px;height:24px;padding:0 7px;border-radius:999px;background:' + bg + ';color:' + fg + ';font-weight:700;font-size:13px;flex:none;' + (extra||''))}>${code}</span>`;
@@ -75,7 +81,7 @@ class App extends React.Component {
     this.state = {
       boot: null, bootErr: null, loggedIn: false, login: {name:null, pin:'', err:null},
       tab: 'in', in: blank(), out: blank(), tare: blank(), last: {}, busy: false,
-      srv: EMPTY_SRV, live: EMPTY_LIVE, dd: null, zoom: {}, full: false, vw: 1366, vh: 620,
+      srv: EMPTY_SRV, live: EMPTY_LIVE, dd: null, zoom: (() => { try { return JSON.parse(localStorage.getItem('iswm-zoom') || '{}') || {}; } catch (e) { return {}; } })(), full: false, vw: 1366, vh: 620,
       rec: {date: today, arrived:'All', ftype:'All', sel:{}, out:{}, expand:false, msg:null, err:null},
       corr: {open:false, id:null, reason:'', err:null},
       sample: {open:false, kg:'', wet:'', dry:'', inert:'', err:null},
@@ -86,7 +92,8 @@ class App extends React.Component {
       admin: {open:false, pw:'', err:null, view:null, draft:null, ops:null, newPw:'', newPw2:'', counters:null, msg:null},
       setup: {site:'', agency:'', pw:'', pw2:'', op:'', pin:'', err:null},
       ddIdx: -1, osk: null, oskShift: false, help: false, camWatch: false, oskMode: (() => { try { return localStorage.getItem('iswm-osk') === '1'; } catch (e) { return false; } })(),
-      photoBig: null
+      photoBig: null,
+      set: {view:null, port:null, cams:null, check:null, err:null, msg:null, busy:false}
     };
   }
 
@@ -108,18 +115,20 @@ class App extends React.Component {
     this.clock = setInterval(() => this.forceUpdate(), 1000);
     this.livePoll = setInterval(() => this.pollLive(), 200);
     this.srvPoll = setInterval(() => { if (this.state.loggedIn) this.refresh(); }, 10000);
+    this.setPoll = setInterval(() => { if (this.state.loggedIn && this.state.tab === 'set') this.loadSet(); }, 1000);
     api('boot').then(boot => { document.title = boot.site || 'ISWM'; this.setState({boot, loggedIn: !!boot.operator}, () => this.refresh()); })
       .catch(e => this.setState({bootErr: e.message}));
   }
   componentWillUnmount() {
     clearTimeout(this.fitT); window.removeEventListener('resize', this.fit); window.removeEventListener('keydown', this.onKey);
     document.removeEventListener('pointerdown', this.onPointer, true); document.removeEventListener('focusin', this.onFocusIn); document.removeEventListener('focusout', this.onFocusOut);
-    document.removeEventListener('fullscreenchange', this.onFs); clearInterval(this.clock); clearInterval(this.livePoll); clearInterval(this.srvPoll);
+    document.removeEventListener('fullscreenchange', this.onFs); clearInterval(this.clock); clearInterval(this.livePoll); clearInterval(this.srvPoll); clearInterval(this.setPoll);
   }
   pollLive() {
     if (this.liveBusy) return;
     this.liveBusy = true;
-    api('live').then(live => this.setState({live})).catch(() => {}).finally(() => { this.liveBusy = false; });
+    // each new reading from the weighbridge flips wbBeat, so the "connected" dot blinks while data comes in
+    api('live').then(live => this.setState(st => { const seq = live.wb && live.wb.seq; const moved = live.wb.connected && seq !== this.lastSeq; this.lastSeq = seq; return {live, wbBeat: moved ? !st.wbBeat : st.wbBeat}; })).catch(() => {}).finally(() => { this.liveBusy = false; });
   }
   refresh() {
     return api('state').then(srv => this.setState({srv}, () => { if (this.state.tab === 'rep') this.loadReport(); })).catch(() => {});
@@ -162,6 +171,7 @@ class App extends React.Component {
       if (f && f.veh) api('vehicle_picked', {flow:tab, vno:f.veh}).catch(() => {});
       else if (f) api('vehicle_cleared').catch(() => {});
       if (tab === 'rep') this.loadReport();
+      if (tab === 'set') this.loadSet();
       if (f) this.focusField(tab + '-veh');
       this.refresh();
     });
@@ -174,6 +184,10 @@ class App extends React.Component {
   }
   focusField(key) {
     setTimeout(() => { const el = document.getElementById('fld-' + key); if (el) { this.progFocus = true; el.focus(); this.progFocus = false; } }, 30);
+  }
+  // Camera zoom, remembered per camera on this PC. 0.75× shows the whole picture; 1× fills the box.
+  setZoom(name, z) {
+    this.setState(st => { const zoom = {...(st.zoom || {}), [name]: z}; try { localStorage.setItem('iswm-zoom', JSON.stringify(zoom)); } catch (e) {} return {zoom}; });
   }
   goTare(vno) { this.setState({tab:'tare', tare:{...blank(), typed:vno, veh:vno}}, () => api('vehicle_picked', {flow:'tare', vno}).catch(() => {})); }
   toggleFull() {
@@ -323,18 +337,27 @@ class App extends React.Component {
     else if (flow==='tare' && status==='hasTare') st('Done', ...GR, 'Already has an empty weight: ' + kg(tare) + '. Nothing to do.');
     else if (!wb.stable) st('Settling', ...AM, 'Keep the vehicle still.');
     else if (live <= minKg) st('Too light', RED, '#fff', 'Weight must be more than ' + fmt(minKg) + ' kg.');
-    else st('Stable', GRN, '#fff', flow==='in' && status==='new' ? 'New vehicle: weigh it empty on yellow 4 after unloading.' : 'Ready. Save takes both photos and this weight.');
+    else st('Stable', GRN, '#fff', flow==='in' && status==='new' ? 'New vehicle: weigh it empty on yellow 4 after unloading.' : 'Ready. Save takes the photos and this weight.');
     k.showGoTare = flow==='out' && (status==='new' || status==='pending');
     k.goTare = () => this.goTare(f.veh);
-    k.cams = cd.cams.map((code,i) => {
-      const name = i===0 ? 'front' : 'back', key = flow + code, z = (s.zoom||{})[key] || 1;
-      const step = d => this.setState(st => { const cur = (st.zoom||{})[key] || 1; return {zoom:{...(st.zoom||{}), [key]: Math.round(Math.min(4, Math.max(1, cur + d))*100)/100}}; });
-      const camLive = !!(s.live.cams[name] && s.live.cams[name].live);
-      const cst = s.live.cams[name] || {};
-      return {code, name, live: camLive, on: !!cst.on, setUp: cst.error !== 'Not set up', label: i===0 ? 'Front camera' : 'Back camera', z, zLabel: z.toFixed(1) + '×',
-        zoomIn: () => step(0.5), zoomOut: () => step(-0.5), zoomReset: () => this.setState(st => ({zoom:{...(st.zoom||{}), [key]: 1}})),
-        onWheel: e => step(e.deltaY < 0 ? 0.25 : -0.25)};
+    const shown = camIds(s.live.cams).filter(n => s.live.cams[n].show !== false);
+    k.cams = shown.map(name => {
+      const n = camIds(s.live.cams).indexOf(name), code = n === 0 ? cd.cams[0] : n === 1 ? cd.cams[1] : 'C' + (n + 1);
+      const z = (s.zoom||{})[name] || 1, cst = s.live.cams[name] || {};
+      const step = dir => this.setZoom(name, zoomStep(z, dir));
+      return {code, name, live: !!cst.live, on: !!cst.on, setUp: cst.error !== 'Not set up', label: cst.label || name,
+        z, zLabel: z === 0.75 ? '0.75×' : z.toFixed(1) + '×', fit: z < 1, canIn: z < 4, canOut: z > 0.75,
+        zoomIn: () => step(1), zoomOut: () => step(-1), zoomReset: () => this.setZoom(name, z === 1 ? 0.75 : 1),
+        onWheel: e => step(e.deltaY < 0 ? 1 : -1)};
     });
+    const nc = k.cams.length;
+    const lw = s.vw / Math.min(s.vw / BASE_W, s.vh / BASE_H, 2), lh = s.vh / Math.min(s.vw / BASE_W, s.vh / BASE_H, 2);
+    const W = lw - 48 - (flow === 'in' ? 260 : 0), H = Math.max(150, lh - 406);
+    let best = 1, bestW = 0;
+    for (let c = 1; c <= Math.max(1, nc); c++) { const r = Math.ceil(nc / c), w = Math.min((W - 14 * (c - 1)) / c, (H - 14 * (r - 1)) / r * 16 / 9); if (w > bestW + 1) { best = c; bestW = w; } }
+    k.camCols = best;
+    k.camSmall = nc > 2;
+    k.zb = nc > 2 ? 32 : 38;
     k.manualKg = f.manualKg || '';
     k.onManualKg = e => this.setF('out', {manualKg:e.target.value});
     k.reasons = ['Small scale (1 ton)','Weighbridge not working','Load too small'].map(r => ({label:r, ...SEL(f.reason===r), pick: () => this.setF('out',{reason:r})}));
@@ -364,12 +387,14 @@ class App extends React.Component {
     const s = this.state;
     if (s.bootErr) return h`<div style=${css('padding:40px;font-size:22px;color:#C62828')}>${s.bootErr}</div>`;
     if (!s.boot) return null;
+    // Fit any screen: the layout is designed at 1366 × 620 and scaled so the narrower side fits;
+    // the other side gets the extra room (wider screens: wider boxes, taller screens: bigger cameras).
     const vw = s.vw, vh = s.vh;
-    let fit = Math.min(vw/1366, vh/620); if (!isFinite(fit) || fit <= 0) fit = 1;
-    const scale = s.full ? fit : Math.min(fit, 1);
+    let scale = Math.min(vw / BASE_W, vh / BASE_H, 2); if (!isFinite(scale) || scale <= 0) scale = 1;
+    const lw = Math.floor(vw / scale), lh = Math.floor(vh / scale);
     return h`
-<div style=${css('position:fixed;inset:0;background:var(--green-050);display:flex;align-items:center;justify-content:center;overflow:hidden')}>
-<div data-screen-label="ISWM Plant App" style=${css('width:1366px;height:620px;flex:none;transform:scale(' + scale + ');transform-origin:center;background:#fff;box-shadow:var(--shadow-lg);display:flex;flex-direction:column;position:relative;overflow:hidden;color:var(--ink-700)')}>
+<div style=${css('position:fixed;inset:0;background:#fff;overflow:hidden')}>
+<div data-screen-label="ISWM Plant App" style=${css('position:absolute;left:0;top:0;width:' + lw + 'px;height:' + lh + 'px;transform:scale(' + scale + ');transform-origin:0 0;background:#fff;display:flex;flex-direction:column;overflow:hidden;color:var(--ink-700)')}>
 ${s.boot.needsSetup ? this.renderSetup() : s.loggedIn ? this.renderApp() : this.renderLogin()}
 ${this.renderDialogs()}
 ${this.renderTrip()}
@@ -442,8 +467,8 @@ ${this.renderHelp()}
       }
       return;
     }
-    const tabKey = e.altKey && /^(Digit|Numpad)([1-6])$/.exec(e.code || '');
-    if (tabKey) { e.preventDefault(); return this.goTab(['in','out','rec','tare','sync','rep'][Number(tabKey[2]) - 1]); }
+    const tabKey = e.altKey && /^(Digit|Numpad)([1-7])$/.exec(e.code || '');
+    if (tabKey) { e.preventDefault(); return this.goTab(['in','out','rec','tare','sync','rep','set'][Number(tabKey[2]) - 1]); }
     const work = ['in','out','tare'].includes(s.tab);
     if (e.ctrlKey && (e.key === 's' || e.key === 'S')) { e.preventDefault(); if (work && !this.work().saveDisabled) this.save(s.tab); return; }
     if (e.altKey && s.tab === 'in') {
@@ -499,32 +524,32 @@ ${this.renderHelp()}
       : mode==='off' ? {label:'Sync off', bg:'#E8EDEA', fg:'#151515'}
       : {label:'Offline', bg:'#E8EDEA', fg:'#151515'};
     const wbOff = !this.wbOn();
-    const tabs = [['in',1,'Inward'],['out',2,'Outward'],['rec',3,'Material recovery'],['tare',4,'Tare'],['sync',5,'Sync'],['rep',6,'Reports']].map(([id,n,label]) => {
+    const tabs = [['in',1,'Inward'],['out',2,'Outward'],['rec',3,'Material recovery'],['tare',4,'Tare'],['sync',5,'Sync'],['rep',6,'Reports'],['set',7,'Settings']].map(([id,n,label]) => {
       const on = s.tab===id;
       return {id, n, label, color: on ? '#fff' : C[n], fg: on ? (n===4 ? '#151515' : C[n]) : FG[n], tfg: on ? FG[n] : 'var(--ink-900)', border: on ? (n===4 ? '#151515' : C[n]) : 'var(--ink-300)', bg: on ? C[n] : '#fff', weight: on ? 700 : 400,
         hasCount: id==='tare' && srv.pending.length>0, count: srv.pending.length, go: () => this.goTab(id)};
     });
     const isWork = ['in','out','tare'].includes(s.tab);
-    const screenColor = C[{in:1,out:2,rec:3,tare:4,sync:5,rep:6}[s.tab]];
+    const screenColor = C[{in:1,out:2,rec:3,tare:4,sync:5,rep:6,set:7}[s.tab]];
     const fullLabel = s.full ? 'Exit full view' : 'Full view';
     const fullIcon = s.full ? 'M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3' : 'M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3';
     const endShift = () => { if (window.confirm('End shift for ' + boot.operator + '?')) api('logout').then(() => this.setState(st => ({loggedIn:false, boot:{...st.boot, operator:null}}))); };
     return h`
-<div style=${css('height:64px;flex:none;display:flex;align-items:center;gap:12px;padding:0 16px;background:#fff')}>
+<div style=${css('height:64px;flex:none;display:flex;align-items:center;gap:10px;padding:0 14px;background:#fff')}>
   ${this.logoUrl() && h`<img src=${this.logoUrl()} alt="" style=${css('height:40px;max-width:120px;object-fit:contain;flex:none')} />`}
-  <div onClick=${() => this.secretTap()} style=${css('display:flex;flex-direction:column;line-height:1.15;flex:none;white-space:nowrap;user-select:none')}>
-    <span style=${css('font-size:17px;font-weight:700;color:var(--ink-900)')}>${boot.site}</span>
-    <span style=${css('font-size:12px;color:var(--ink-700)')}>${boot.agency}</span>
+  <div onClick=${() => this.secretTap()} title=${boot.site + ' · ' + boot.agency} style=${css('display:flex;flex-direction:column;line-height:1.15;flex:0 1 auto;min-width:60px;max-width:220px;white-space:nowrap;user-select:none;overflow:hidden')}>
+    <span style=${css('font-size:17px;font-weight:700;color:var(--ink-900);overflow:hidden;text-overflow:ellipsis')}>${boot.site}</span>
+    <span style=${css('font-size:12px;color:var(--ink-700);overflow:hidden;text-overflow:ellipsis')}>${boot.agency}</span>
   </div>
-  <div style=${css('display:flex;gap:2px;flex:1;min-width:0;justify-content:center')}>
-    ${tabs.map(t => h`<button key=${t.id} onClick=${t.go} style=${css('display:flex;align-items:center;gap:7px;height:44px;padding:0 11px 0 6px;white-space:nowrap;flex:none;border-radius:999px;border:2px solid ' + t.border + ';background:' + t.bg + ';cursor:pointer;font-size:16px;font-weight:' + t.weight + ';color:' + t.tfg)}>
-        <span style=${css('display:inline-flex;align-items:center;justify-content:center;min-width:30px;height:30px;padding:0 6px;border-radius:999px;background:' + t.color + ';color:' + t.fg + ';font-weight:700;font-size:15px')}>${t.n}</span>
+  <div style=${css('display:flex;align-items:center;gap:3px;flex:0 0 auto;justify-content:center;margin:0 auto')}>
+    ${tabs.map(t => h`<button key=${t.id} onClick=${t.go} title=${'Alt + ' + t.n} style=${css('display:flex;align-items:center;gap:6px;height:42px;padding:0 10px 0 5px;white-space:nowrap;flex:none;border-radius:999px;border:2px solid ' + t.border + ';background:' + t.bg + ';cursor:pointer;font-size:15px;font-weight:' + t.weight + ';color:' + t.tfg)}>
+        <span style=${css('display:inline-flex;align-items:center;justify-content:center;min-width:28px;height:28px;padding:0 5px;border-radius:999px;background:' + t.color + ';color:' + t.fg + ';font-weight:700;font-size:14px;flex:none')}>${t.n}</span>
         ${t.label}
         ${t.hasCount && h`<span style=${css('min-width:22px;height:22px;padding:0 6px;border-radius:999px;background:#F2C200;color:#151515;border:1px solid #151515;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center')}>${t.count}</span>`}
       </button>`)}
   </div>
-  <div style=${css('display:flex;align-items:center;gap:8px;flex:none')}>
-    ${wbOff && h`<div style=${css('display:flex;align-items:center;gap:7px;height:36px;padding:0 12px;white-space:nowrap;border-radius:999px;background:' + RED + ';color:#fff;font-size:14px;font-weight:700')}><span style=${css('width:9px;height:9px;border-radius:50%;background:#fff')}></span>Bridge off</div>`}
+  <div style=${css('display:flex;align-items:center;gap:6px;flex:none')}>
+    <button onClick=${() => this.goTab('set')} title=${wbOff ? 'Weighbridge not connected — open 7 Settings' : 'Weighbridge connected: the dot blinks with every reading. Open 7 Settings'} style=${css('display:flex;align-items:center;gap:7px;height:36px;padding:0 12px;white-space:nowrap;border-radius:999px;border:2px solid ' + (wbOff ? RED : GRN) + ';background:' + (wbOff ? RED : '#fff') + ';color:' + (wbOff ? '#fff' : GRN) + ';font-size:14px;font-weight:700;cursor:pointer')}><span style=${css('width:10px;height:10px;border-radius:50%;flex:none;transition:opacity 120ms;background:' + (wbOff ? '#fff' : GRN) + ';opacity:' + (wbOff || s.wbBeat ? 1 : 0.2))}></span>${wbOff ? 'Bridge off' : 'Bridge on'}</button>
     <button onClick=${() => this.goTab('sync')} title="Open 5 Sync" style=${css('display:flex;align-items:center;gap:8px;height:36px;padding:0 14px;white-space:nowrap;border-radius:999px;border:2px solid #151515;background:' + syncPill.bg + ';color:' + syncPill.fg + ';font-size:14px;font-weight:700;cursor:pointer')}>
       ${syncPill.label}
     </button>
@@ -543,6 +568,7 @@ ${isWork && this.renderWork()}
 ${s.tab==='rec' && this.renderRec()}
 ${s.tab==='rep' && this.renderRep()}
 ${s.tab==='sync' && this.renderSync()}
+${s.tab==='set' && this.renderSet()}
 </div>`;
   }
 
@@ -584,20 +610,21 @@ ${s.tab==='sync' && this.renderSync()}
         </div>`}
     </div>
 
-    <div style=${css('flex:1;min-height:170px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px')}>
+    <div style=${css('flex:1;min-height:150px;display:grid;grid-template-columns:repeat(' + k.camCols + ',minmax(0,1fr));grid-auto-rows:minmax(0,1fr);gap:' + (k.camSmall ? 10 : 14) + 'px')}>
+      ${k.cams.length === 0 && h`<div style=${css('display:flex;align-items:center;justify-content:center;border-radius:16px;border:2px dashed var(--ink-300);color:var(--ink-700);font-size:17px')}>No cameras on this screen. The admin can choose them.</div>`}
       ${k.cams.map(cam => h`
-        <div key=${cam.code} onWheel=${cam.onWheel} style=${css('border-radius:16px;background:#C9CFCB;border:2px solid #9AA79F;position:relative;overflow:hidden;min-width:0')}>
-          ${cam.live ? h`<img key=${'img' + cam.name} class="cam-img" src=${camUrl(cam.name)} alt=${cam.label} style=${{transform:'scale(' + cam.z + ')'}} />`
-            : h`<div style=${css('position:absolute;inset:0;display:flex;align-items:center;justify-content:center;gap:10px;color:var(--ink-700);font-size:18px;font-weight:700;white-space:nowrap;transform:scale(' + cam.z + ');transition:transform 150ms cubic-bezier(0.22,1,0.36,1)')}>
-              <span style=${css('display:inline-flex;align-items:center;justify-content:center;min-width:30px;height:28px;padding:0 7px;border-radius:999px;background:' + k.cc + ';color:' + k.ccFg + ';font-size:15px')}>${cam.code}</span>${cam.label}
+        <div key=${cam.name} onWheel=${cam.onWheel} style=${css('border-radius:16px;background:' + (cam.live && cam.fit ? '#151515' : '#C9CFCB') + ';border:2px solid #9AA79F;position:relative;overflow:hidden;min-width:0;min-height:0')}>
+          ${cam.live ? h`<img key=${'img' + cam.name} class="cam-img" src=${camUrl(cam.name)} alt=${cam.label} style=${cam.fit ? {objectFit:'contain', transform:'none'} : {transform:'scale(' + cam.z + ')'}} />`
+            : h`<div style=${css('position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:8px;color:var(--ink-700);font-size:' + (k.camSmall ? 15 : 18) + 'px;font-weight:700;text-align:center')}>
+              <span style=${css('display:flex;align-items:center;gap:8px;max-width:100%')}><span style=${css('display:inline-flex;align-items:center;justify-content:center;min-width:30px;height:26px;padding:0 7px;border-radius:999px;background:' + k.cc + ';color:' + k.ccFg + ';font-size:14px;flex:none')}>${cam.code}</span><span style=${css('white-space:nowrap;overflow:hidden;text-overflow:ellipsis')}>${cam.label}</span></span>
+              ${cam.setUp && h`<button onClick=${() => this.setCamWatch(true)} title="Show the cameras (Alt+V)" style=${css('height:' + (k.camSmall ? 34 : 40) + 'px;padding:0 16px;border-radius:999px;border:2px solid var(--ink-700);background:#fff;color:var(--ink-900);font-size:' + (k.camSmall ? 14 : 15) + 'px;font-weight:700;cursor:pointer;white-space:nowrap')}>${cam.on ? 'Starting…' : 'View live'}</button>`}
             </div>`}
-          ${!cam.live && cam.setUp && h`<button onClick=${() => this.setCamWatch(true)} title="Show the camera (Alt+V)" style=${css('position:absolute;left:50%;top:calc(50% + 30px);transform:translateX(-50%);height:40px;padding:0 16px;border-radius:999px;border:2px solid var(--ink-700);background:#fff;color:var(--ink-900);font-size:15px;font-weight:700;cursor:pointer;white-space:nowrap')}>${cam.on ? 'Starting…' : 'View live'}</button>`}
-          ${cam.live && s.camWatch && h`<button onClick=${() => this.setCamWatch(false)} title="Stop the live picture (Alt+V)" style=${css('position:absolute;right:12px;top:10px;height:30px;padding:0 12px;border-radius:999px;border:none;background:rgba(18,26,20,0.65);color:#fff;font-size:13px;font-weight:700;cursor:pointer')}>Stop</button>`}
-          <span style=${css('position:absolute;left:12px;top:12px;display:flex;align-items:center;gap:6px;font-size:12px;letter-spacing:0.14em;text-transform:uppercase;font-weight:700;color:' + (cam.live ? '#fff' : 'var(--ink-700)') + ';' + (cam.live ? 'padding:3px 8px;border-radius:999px;background:rgba(18,26,20,0.55)' : ''))}><span style=${css('width:8px;height:8px;border-radius:50%;background:' + (cam.live ? 'var(--red-600)' : 'var(--ink-500)'))}></span>${cam.live ? h`<span style=${css('display:inline-flex;align-items:center;gap:6px')}>${cam.code} · Live</span>` : !cam.setUp ? 'Not set up' : cam.on ? 'Starting' : 'Off'}</span>
-          <div style=${css('position:absolute;right:10px;bottom:10px;display:flex;align-items:center;gap:4px;padding:4px;border-radius:999px;background:#fff;box-shadow:var(--shadow-md)')}>
-            <button onClick=${cam.zoomOut} aria-label="Zoom out" style=${css('width:40px;height:40px;border-radius:50%;border:none;background:var(--ink-050);font-size:24px;line-height:1;color:var(--ink-900);cursor:pointer')}>−</button>
-            <button onClick=${cam.zoomReset} style=${css('min-width:52px;height:40px;border:none;background:none;font-size:15px;font-weight:700;color:var(--ink-900);cursor:pointer')}>${cam.zLabel}</button>
-            <button onClick=${cam.zoomIn} aria-label="Zoom in" style=${css('width:40px;height:40px;border-radius:50%;border:none;background:var(--ink-050);font-size:24px;line-height:1;color:var(--ink-900);cursor:pointer')}>+</button>
+          ${cam.live && s.camWatch && h`<button onClick=${() => this.setCamWatch(false)} title="Stop the live picture (Alt+V)" style=${css('position:absolute;left:8px;bottom:8px;height:' + k.zb + 'px;padding:0 14px;border-radius:999px;border:none;background:rgba(18,26,20,0.7);color:#fff;font-size:14px;font-weight:700;cursor:pointer')}>Stop</button>`}
+          <span style=${css('position:absolute;left:10px;top:10px;max-width:calc(100% - 20px);display:flex;align-items:center;gap:6px;height:24px;font-size:12px;letter-spacing:0.1em;text-transform:uppercase;font-weight:700;white-space:nowrap;overflow:hidden;color:' + (cam.live ? '#fff' : 'var(--ink-700)') + ';' + (cam.live ? 'padding:0 8px;border-radius:999px;background:rgba(18,26,20,0.55)' : ''))}><span style=${css('width:8px;height:8px;border-radius:50%;flex:none;background:' + (cam.live ? 'var(--red-600)' : 'var(--ink-500)'))}></span><span style=${css('overflow:hidden;text-overflow:ellipsis')}>${cam.live ? cam.code + ' · ' + cam.label : !cam.setUp ? 'Not set up' : cam.on ? 'Starting' : 'Off'}</span></span>
+          <div style=${css('position:absolute;right:8px;bottom:8px;display:flex;align-items:center;gap:2px;padding:3px;border-radius:999px;background:#fff;box-shadow:var(--shadow-md)')}>
+            <button onClick=${cam.zoomOut} disabled=${!cam.canOut} aria-label="Zoom out" title="Zoom out (0.75× shows the whole picture)" style=${css('display:flex;align-items:center;justify-content:center;width:' + k.zb + 'px;height:' + k.zb + 'px;padding:0;border-radius:50%;border:none;background:var(--ink-050);font-size:22px;line-height:1;color:' + (cam.canOut ? 'var(--ink-900)' : 'var(--ink-300)') + ';cursor:pointer')}>−</button>
+            <button onClick=${cam.zoomReset} title="1× fills the box · 0.75× shows the whole picture" style=${css('min-width:' + (k.camSmall ? 48 : 56) + 'px;height:' + k.zb + 'px;padding:0 4px;border:none;background:none;font-size:' + (k.camSmall ? 13 : 15) + 'px;font-weight:700;color:var(--ink-900);cursor:pointer;font-variant-numeric:tabular-nums')}>${cam.zLabel}</button>
+            <button onClick=${cam.zoomIn} disabled=${!cam.canIn} aria-label="Zoom in" style=${css('display:flex;align-items:center;justify-content:center;width:' + k.zb + 'px;height:' + k.zb + 'px;padding:0;border-radius:50%;border:none;background:var(--ink-050);font-size:22px;line-height:1;color:' + (cam.canIn ? 'var(--ink-900)' : 'var(--ink-300)') + ';cursor:pointer')}>+</button>
           </div>
         </div>`)}
     </div>
@@ -644,7 +671,7 @@ ${s.tab==='sync' && this.renderSync()}
       ${k.showRead && h`
         <${React.Fragment}>
         <div style=${css('display:flex;flex-direction:column;gap:2px;flex:none;width:240px')}>
-          <span style=${css('font-size:12px;letter-spacing:0.14em;text-transform:uppercase;font-weight:700;color:var(--ink-700)')}>${k.readLabel}</span>
+          <span style=${css('display:flex;align-items:center;gap:8px;font-size:12px;letter-spacing:0.14em;text-transform:uppercase;font-weight:700;color:var(--ink-700);white-space:nowrap')}>${k.readLabel}<span title="Blinks with every reading from the weighbridge" style=${css('display:inline-flex;align-items:center;gap:5px;color:' + GRN + ';letter-spacing:0.08em')}><span style=${css('width:10px;height:10px;border-radius:50%;background:' + GRN + ';transition:opacity 120ms;opacity:' + (s.wbBeat ? 1 : 0.2))}></span>Live</span></span>
           <span style=${css('display:flex;align-items:baseline;gap:8px;white-space:nowrap')}><span style=${css('font-size:64px;line-height:1;letter-spacing:-0.02em;color:var(--ink-900);font-variant-numeric:tabular-nums')}>${k.readVal}</span><span style=${css('font-size:22px;color:var(--ink-700)')}>kg</span></span>
         </div>
         <div style=${css('flex:1;min-width:0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px')}>
@@ -876,9 +903,14 @@ ${s.tab==='in' && h`
     }
     const field = (k, v) => h`<${React.Fragment} key=${k}><span style=${css('color:var(--ink-700)')}>${k}</span><b style=${css('color:var(--ink-900)')}>${v == null || v === '' ? '—' : v}</b><//>`;
     return h`<${Dialog} open=${true} title=${r.id + ' · ' + r.vno} onClose=${close} width=${960}>
-      <div style=${css('display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) 250px;gap:14px;max-height:430px')}>
-        ${['front','back'].map(w => h`<div key=${w} style=${css('border-radius:12px;background:#C9CFCB;aspect-ratio:16/10;overflow:hidden;display:flex;align-items:center;justify-content:center;color:var(--ink-700);font-weight:700')}>
-          ${T.photos && T.photos[w] ? h`<img src=${photo(w)} alt=${w} title="Click to see it large" onClick=${() => this.setState({photoBig:photo(w)})} style=${{width:'100%', height:'100%', objectFit:'cover', cursor:'zoom-in'}} />` : (T.photos ? 'No ' + w + ' photo on this PC' : 'Loading…')}</div>`)}
+      <div style=${css('display:grid;grid-template-columns:minmax(0,1fr) 250px;gap:14px;max-height:430px')}>
+        <div style=${css('display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;align-content:start;overflow-y:auto;max-height:430px')}>
+        ${!T.photos ? h`<div style=${css('grid-column:1/-1;padding:30px;text-align:center;color:var(--ink-700);font-weight:700')}>Loading…</div>`
+          : T.photos.length === 0 ? h`<div style=${css('grid-column:1/-1;padding:30px;text-align:center;border-radius:12px;background:#C9CFCB;color:var(--ink-700);font-weight:700')}>No photos for this trip.</div>`
+          : T.photos.map(p => h`<div key=${p.cam} style=${css('position:relative;border-radius:12px;background:#C9CFCB;aspect-ratio:16/10;overflow:hidden;display:flex;align-items:center;justify-content:center;color:var(--ink-700);font-weight:700;text-align:center;padding:0 8px')}>
+            ${p.here ? h`<img src=${photo(p.cam)} alt=${p.label} title="Click to see it large" onClick=${() => this.setState({photoBig:photo(p.cam)})} style=${css('position:absolute;inset:0;width:100%;height:100%;object-fit:cover;cursor:zoom-in')} />` : 'Photo no longer on this PC'}
+            <span style=${css('position:absolute;left:8px;top:8px;padding:2px 9px;border-radius:999px;background:rgba(18,26,20,0.6);color:#fff;font-size:12px;font-weight:700')}>${p.label}</span></div>`)}
+        </div>
         <div style=${css('display:grid;grid-template-columns:auto 1fr;gap:4px 10px;font-size:15px;align-content:start')}>
           ${field('Date', shortDay(r.day) + ' ' + r.time)}
           ${field(r.dir === 'in' ? 'From' : 'Going to', r.where)}
@@ -1108,6 +1140,86 @@ ${s.tab==='in' && h`
 </div>`;
   }
 
+  // --- 7 settings: what the tech team needs to see; changes need the admin ---------------
+  loadSet() {
+    if (this.setBusy) return;
+    this.setBusy = true;
+    api('settings_view').then(view => this.setState(st => ({set:{...st.set, view}}))).catch(e => this.setState(st => ({set:{...st.set, err:e.message}}))).finally(() => { this.setBusy = false; });
+  }
+  renderSet() {
+    const S = this.state.set, v = S.view, setS = patch => this.setState(st => ({set:{...st.set, ...patch}}));
+    if (!v) return h`<div style=${css('flex:1;display:flex;align-items:center;justify-content:center;font-size:18px;color:var(--ink-700)')}>Loading…</div>`;
+    const admin = v.admin, wb = v.wb, slate = C[7];
+    const port = S.port != null ? S.port : v.comPort;
+    const ports = [...new Set([...(v.ports || []), ...(v.comPort ? [v.comPort] : [])])];
+    const ids = camIds(v.cams), edits = S.cams || {};
+    const camVal = (n, k) => (edits[n] && edits[n][k] != null) ? edits[n][k] : ((v.cams[n].addr || '').split(':')[k === 'ip' ? 0 : 1] || '');
+    const setCam = (n, k, val) => setS({cams:{...edits, [n]:{ip:camVal(n,'ip'), port:camVal(n,'port'), ...(edits[n] || {}), [k]:val}}, msg:null, err:null});
+    const refresh = () => { setS({msg:'Looking for COM ports…', err:null}); api('settings_view').then(view => setS({view, msg:(view.ports.length ? 'Found ' + view.ports.join(', ') : 'No COM ports found. Check the USB-serial cable.')})).catch(e => setS({err:e.message})); };
+    const save = () => { setS({busy:true, err:null, msg:null}); api('settings_save', {comPort: port !== v.comPort ? port : null, cams: S.cams})
+      .then(view => { setS({view, port:null, cams:null, busy:false, msg:'Saved. The weighbridge and cameras restart now.'}); this.pollLive(); })
+      .catch(e => setS({busy:false, err:e.message})); };
+    const changed = (port !== v.comPort) || !!S.cams;
+    const pill = (txt, bg, fg) => h`<span style=${css('padding:3px 10px;border-radius:999px;background:' + bg + ';color:' + fg + ';font-size:13px;font-weight:700;white-space:nowrap')}>${txt}</span>`;
+    const lab = 'font-size:12px;letter-spacing:0.12em;text-transform:uppercase;font-weight:700;color:var(--ink-700)';
+    const inp = 'height:38px;padding:0 10px;border-radius:10px;border:2px solid var(--ink-300);font-size:16px;color:var(--ink-900);background:#fff;font-family:var(--font-body);box-sizing:border-box;min-width:0';
+    const check = n => { setS({check: S.check === n ? null : n}); if (S.check !== n) api('camera_watch', {on:true, names:[n]}).catch(() => {}); };
+    return h`
+<div data-screen-label="7 Settings" style=${css('flex:1;min-width:0;display:flex;gap:16px;padding:14px 24px 16px')}>
+  <div style=${css('width:400px;flex:none;display:flex;flex-direction:column;gap:12px;border:2px solid var(--ink-300);border-radius:20px;padding:14px 16px')}>
+    <div style=${css('display:flex;align-items:center;gap:10px')}>${badge(71, slate, '#fff')}<span style=${css('font-size:20px;color:var(--ink-900)')}>Weighbridge</span>
+      <span style=${css('margin-left:auto')}>${wb.connected ? pill('Connected', GRN, '#fff') : pill('Not connected', RED, '#fff')}</span></div>
+    <div style=${css('display:flex;align-items:baseline;gap:10px')}>
+      <span style=${css('width:12px;height:12px;border-radius:50%;align-self:center;background:' + (wb.connected ? GRN : 'var(--ink-300)') + ';opacity:' + (wb.connected && !this.state.wbBeat ? 0.2 : 1) + ';transition:opacity 120ms')}></span>
+      <span style=${css('font-size:44px;line-height:1;color:var(--ink-900);font-variant-numeric:tabular-nums')}>${wb.connected ? fmt(wb.weight) : '—'}</span><span style=${css('font-size:18px;color:var(--ink-700)')}>kg</span>
+      <span style=${css('margin-left:auto;font-size:15px;color:var(--ink-700)')}>${wb.rate + ' readings / second'}</span>
+    </div>
+    <div style=${css('display:flex;flex-direction:column;gap:4px')}>
+      <span style=${css(lab)}>COM port</span>
+      <div style=${css('display:flex;gap:8px;align-items:center')}>
+        ${admin ? h`<input id="fld-set-port" list="set-ports" value=${port} placeholder="COM3" onChange=${e => setS({port:e.target.value.toUpperCase(), msg:null, err:null})} style=${css(inp + ';flex:1;font-size:18px;font-weight:700')} />`
+          : h`<span style=${css('flex:1;height:38px;display:flex;align-items:center;padding:0 12px;border-radius:10px;background:var(--ink-050);font-size:18px;font-weight:700;color:var(--ink-900)')}>${v.simulate ? 'Simulator (testing)' : v.comPort || 'Not set'}</span>`}
+        <datalist id="set-ports">${ports.map(p => h`<option key=${p} value=${p} />`)}</datalist>
+        <button onClick=${refresh} title="Look for COM ports again" style=${css('display:flex;align-items:center;gap:6px;height:38px;padding:0 12px 0 5px;border-radius:999px;border:2px solid var(--ink-300);background:#fff;color:var(--ink-900);font-size:15px;font-weight:700;cursor:pointer;white-space:nowrap;flex:none')}>${badge(72, slate, '#fff', 'height:26px')}Refresh</button>
+      </div>
+      <span style=${css('font-size:14px;color:var(--ink-700)')}>${'Ports on this PC: ' + (v.ports.length ? v.ports.join(', ') : 'none found')}</span>
+    </div>
+    <div style=${css('display:flex;flex-direction:column;gap:4px')}>
+      <span style=${css(lab)}>Last line from the weighbridge</span>
+      <span style=${css('min-height:34px;display:flex;align-items:center;padding:0 10px;border-radius:10px;background:#151515;color:#BFEBC9;font-family:Consolas,monospace;font-size:15px;white-space:pre;overflow:hidden;text-overflow:ellipsis')}>${wb.raw || (v.simulate ? '(simulator — no cable)' : '(nothing received)')}</span>
+    </div>
+    ${wb.error && h`<span style=${css('font-size:14px;font-weight:700;color:#C62828')}>${wb.error}</span>`}
+    <div style=${css('flex:1')}></div>
+    <span style=${css('font-size:13px;color:var(--ink-700)')}>Baud rate, parity and the weight pattern are in Admin. Version ${v.version}.</span>
+  </div>
+
+  <div style=${css('flex:1;min-width:0;display:flex;flex-direction:column;border:2px solid var(--ink-300);border-radius:20px;overflow:hidden')}>
+    <div style=${css('display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--ink-200)')}>${badge(74, slate, '#fff')}<span style=${css('font-size:20px;color:var(--ink-900)')}>Cameras</span>
+      <span style=${css('margin-left:auto;font-size:14px;color:var(--ink-700)')}>${admin ? 'Type a new IP or port, then Save.' : 'Ask the admin to change an address.'}</span></div>
+    <div style=${css('display:grid;grid-template-columns:minmax(0,1.2fr) 70px minmax(0,1.3fr) 110px 120px;gap:8px;padding:6px 16px;background:#151515;color:#fff;font-size:14px;font-weight:700')}>
+      <span>Camera</span><span>Type</span><span>IP address : port</span><span>Status</span><span></span></div>
+    <div style=${css('flex:1;min-height:0;overflow-y:auto')}>
+      ${ids.map((n, i) => { const c = v.cams[n], ip = c.type === 'RTSP' || c.type === 'HTTP'; return h`
+        <div key=${n} style=${css('display:grid;grid-template-columns:minmax(0,1.2fr) 70px minmax(0,1.3fr) 110px 120px;gap:8px;align-items:center;padding:6px 16px;border-bottom:1px solid var(--ink-200);font-size:16px;color:var(--ink-900)')}>
+          <span style=${css('display:flex;flex-direction:column;min-width:0')}><b style=${css('white-space:nowrap;overflow:hidden;text-overflow:ellipsis')}>${c.label}</b><span style=${css('font-size:13px;color:var(--ink-700)')}>${(i < 2 ? (i === 0 ? 'Front' : 'Back') : 'Camera ' + (i + 1)) + (c.show === false ? ' · hidden' : '') + (c.photo === false ? ' · no photo' : '')}</span></span>
+          <span style=${css('font-size:15px;color:var(--ink-700)')}>${c.type === 'NONE' ? '—' : c.type}</span>
+          ${admin && ip ? h`<span style=${css('display:grid;grid-template-columns:minmax(0,1fr) 70px;gap:6px')}><input value=${camVal(n,'ip')} placeholder="192.168.1.64" onChange=${e => setCam(n, 'ip', e.target.value.trim())} style=${css(inp)} /><input value=${camVal(n,'port')} placeholder="554" onChange=${e => setCam(n, 'port', e.target.value.replace(/\D/g,''))} style=${css(inp)} /></span>`
+            : h`<span style=${css('font-family:Consolas,monospace;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis')}>${c.addr}</span>`}
+          <span title=${c.error || ''} style=${css('display:flex;flex-direction:column;align-items:flex-start;gap:2px;min-width:0')}>${c.live ? pill('Live', GRN, '#fff') : c.error && c.error !== 'Not set up' ? pill('Problem', RED, '#fff') : pill(c.error === 'Not set up' ? 'Not set up' : 'Off', 'var(--ink-200)', 'var(--ink-900)')}
+            <span style=${css('font-size:12px;color:var(--ink-700);white-space:nowrap;overflow:hidden;text-overflow:ellipsis')}>${c.live && c.size ? c.size[0] + '×' + c.size[1] : c.error && c.error !== 'Not set up' ? c.error : ''}</span></span>
+          <button onClick=${() => check(n)} disabled=${c.type === 'NONE'} style=${css('justify-self:end;display:flex;align-items:center;gap:6px;height:36px;padding:0 12px 0 5px;border-radius:999px;border:2px solid ' + (S.check === n ? slate : 'var(--ink-300)') + ';background:' + (S.check === n ? slate : '#fff') + ';color:' + (S.check === n ? '#fff' : 'var(--ink-900)') + ';font-size:14px;font-weight:700;cursor:pointer;white-space:nowrap')}>${badge(75, S.check === n ? '#fff' : slate, S.check === n ? slate : '#fff', 'height:24px;min-width:28px')}${S.check === n ? 'Close' : 'Check'}</button>
+        </div>
+        ${S.check === n && h`<div key=${n + '-p'} style=${css('padding:8px 16px;border-bottom:1px solid var(--ink-200);background:var(--ink-050)')}><img src=${camUrl(n) + '&watch=1'} alt=${c.label} style=${css('display:block;width:100%;max-height:260px;object-fit:contain;background:#151515;border-radius:10px')} /></div>`}`; })}
+    </div>
+    <div style=${css('display:flex;align-items:center;gap:12px;padding:8px 16px;border-top:2px solid var(--ink-300)')}>
+      <span style=${css('flex:1;min-width:0;font-size:15px;font-weight:700;color:' + (S.err ? '#C62828' : 'var(--green-700)'))}>${S.err || S.msg || ''}</span>
+      ${admin ? h`<${Button} disabled=${!changed || S.busy} onClick=${save} style=${{whiteSpace:'nowrap'}}>${badge(76, slate, '#fff', 'box-shadow:0 0 0 2px #fff')}Save<//>`
+        : h`<${Button} variant="secondary" onClick=${() => this.openAdmin()} style=${{whiteSpace:'nowrap'}}>Unlock admin to change<//>`}
+    </div>
+  </div>
+</div>`;
+  }
+
   // --- dialogs -----------------------------------------------------------------
   renderDialogs() {
     const s = this.state, C2 = s.corr, S = s.sample;
@@ -1227,7 +1339,17 @@ ${this.renderAdmin()}
       const c = d.cameras[name], cl = live.cams[name] || {}, ip = c.type === 'RTSP' || c.type === 'HTTP';
       return h`
       <div class="admin-sec">
-        <h4>${name==='front' ? 'Front camera' : 'Back camera'}</h4>
+        <div style=${css('display:flex;align-items:center;gap:10px')}>
+          <h4 style=${{flex:1, minWidth:0}}>${c.label || name}</h4>
+          ${!['front','back'].includes(name) && h`<button onClick=${() => { const nd = JSON.parse(JSON.stringify(d)); delete nd.cameras[name]; setA({draft:nd, msg:null, err:null}); }} style=${css('height:32px;padding:0 12px;border-radius:999px;border:2px solid #C62828;background:#fff;color:#C62828;font-size:14px;font-weight:700;cursor:pointer;flex:none')}>Remove</button>`}
+        </div>
+        <div style=${css('display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:end')}>
+          ${row('Name on screen', ['cameras', name, 'label'])}
+          <div style=${css('display:flex;flex-direction:column;gap:6px;padding-bottom:2px')}>
+            ${row('Show on weighing screens', ['cameras', name, 'show'], 'check')}
+            ${row('Take photo at Save', ['cameras', name, 'photo'], 'check')}
+          </div>
+        </div>
         ${cl.live || A.preview ? h`<img class="admin-thumb" src=${camUrl(name) + '&watch=1'} alt="" />` : h`<div class="admin-thumb" style=${{padding:'0 12px', textAlign:'center'}}>${cl.error || 'No signal'}</div>`}
         <span style=${css('font-size:13px;color:var(--ink-700)')}>${cl.live && cl.size ? 'Live at ' + cl.size[0] + ' × ' + cl.size[1] + (cl.size[0] < 1280 ? ' — low. Use the main stream.' : '') : 'Saved changes show here after Save settings.'}</span>
         <div class="admin-grid">
@@ -1323,7 +1445,17 @@ ${this.renderAdmin()}
         ${row('Least weight to save (kg)', ['weighbridge','min_weight_kg'], 'number')}
       </div>
     </div>
-    <div class="admin-grid">${camBox('front')}${camBox('back')}</div>
+    <div class="admin-sec" style=${{border:'none', padding:'0'}}>
+      <div style=${css('display:flex;align-items:center;gap:12px')}>
+        <h4 style=${{flex:1}}>${'Cameras (' + camIds(d.cameras).length + ' of ' + MAX_CAMS + ')'}</h4>
+        <span style=${css('font-size:13px;color:var(--ink-700)')}>Untick “Show” to hide a camera from the weighing screens but keep its photos.</span>
+        <${Button} variant="secondary" size="sm" disabled=${camIds(d.cameras).length >= MAX_CAMS} onClick=${() => {
+          const nd = JSON.parse(JSON.stringify(d)); let n = 3; while (nd.cameras['cam' + n]) n++;
+          nd.cameras['cam' + n] = {label:'Camera ' + n, show:true, photo:true, type:'RTSP', brand:'Hikvision', index:n - 1, ip:'', port:'554', username:'', password:'', endpoint:(brands.Hikvision || {}).rtsp || '/Streaming/Channels/101', snapshot_endpoint:(brands.Hikvision || {}).snapshot || '', http_port:'80', url:''};
+          setA({draft:nd, msg:'Camera ' + n + ' added. Fill in its address, then Save settings.', err:null}); }}>Add camera<//>
+      </div>
+      <div class="admin-grid">${camIds(d.cameras).map(n => h`<${React.Fragment} key=${n}>${camBox(n)}<//>`)}</div>
+    </div>
     <div class="admin-grid">
       <div class="admin-sec">
         <h4>Fix a vehicle number everywhere</h4>
@@ -1434,13 +1566,14 @@ ${this.renderAdmin()}
     if (document.activeElement !== el) el.focus();
     this.oskEl = el;
     const r = el.getBoundingClientRect(), box = document.querySelector('[data-screen-label="ISWM Plant App"]');
-    const b = box ? box.getBoundingClientRect() : {left:0, top:0, width:1366, height:620};
-    const k = b.width / 1366 || 1, num = el.type === 'number' || el.inputMode === 'numeric', w = num ? 260 : 720;
+    const b = box ? box.getBoundingClientRect() : {left:0, top:0, width:BASE_W, height:BASE_H};
+    const LW = box ? box.offsetWidth : BASE_W, LH = box ? box.offsetHeight : BASE_H;  // layout size before scaling
+    const k = b.width / LW || 1, num = el.type === 'number' || el.inputMode === 'numeric', w = num ? 260 : 720;
     // sit beside the box (so the box and its pick-list stay visible), bottom edge level with the box
     const fl = (r.left - b.left) / k, fr = (r.right - b.left) / k, fb = (r.bottom - b.top) / k;
     const hgt = num ? 270 : 280;
-    let left = fr + 12 + w <= 1358 ? fr + 12 : fl - 12 - w >= 8 ? fl - 12 - w : Math.max(8, Math.min(1366 - w - 8, fl));
-    const top = Math.round(Math.min(620 - hgt - 8, Math.max(72, fb - hgt)));
+    let left = fr + 12 + w <= LW - 8 ? fr + 12 : fl - 12 - w >= 8 ? fl - 12 - w : Math.max(8, Math.min(LW - w - 8, fl));
+    const top = Math.round(Math.min(LH - hgt - 8, Math.max(72, fb - hgt)));
     this.setState({osk: {num, w, top, left: Math.round(left)}});
   }
   oskPress(key) {
@@ -1500,7 +1633,8 @@ ${this.renderAdmin()}
     if (!this.state.help) return null;
     const rows = [
       ['Sign in', 'Pick name with ← →, type the PIN on the keyboard or number pad. Backspace undoes, Delete clears.'],
-      ['Change screen', 'Alt + 1 to 6 (1 Inward, 2 Outward, 3 Recovery, 4 Tare, 5 Sync, 6 Reports)'],
+      ['Change screen', 'Alt + 1 to 7 (1 Inward, 2 Outward, 3 Recovery, 4 Tare, 5 Sync, 6 Reports, 7 Settings)'],
+      ['Weighbridge', 'The green dot next to the weight blinks with every reading. No blinking = no data from the weighbridge.'],
       ['Vehicle', 'Just start typing. ↑ ↓ choose from the list, Enter picks.'],
       ['Save', 'Press Enter again in the vehicle box when the weight is steady, or Ctrl + S'],
       ['Inward choices', 'Alt + R Residential, Alt + C Commercial, Alt + M Mixed, Alt + W Wet, Alt + D Dry'],
