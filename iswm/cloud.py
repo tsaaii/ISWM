@@ -200,6 +200,7 @@ class CloudSync:
                                   "fields": fs_fields({"name": self.settings.get("site_name"),
                                                        "company": self.settings.get("agency_name"),
                                                        "cameras": self.camera_names(),
+                                                       "today": self.today_totals(),
                                                        "last_sync": time.strftime("%Y-%m-%d %H:%M:%S")})}})
         body = json.dumps({"writes": writes}, default=str)
         try:
@@ -223,6 +224,16 @@ class CloudSync:
         self.last_sent = time.strftime("%H:%M")
         self.state, self.message = ("synced", None) if len(latest) <= MAX_WRITES else ("offline", "More to send")
         logging.info("sync: sent %d records, %d bytes", len(writes), len(body))
+
+    def today_totals(self):
+        """Today's totals on the site record, so a dashboard of many sites reads one record per site
+        instead of every trip."""
+        import datetime as dt
+        day = dt.date.today()
+        rep = self.db.report_daily(day)
+        return {"date": day.isoformat(), "in_trips": rep["in"]["total"]["trips"], "in_kg": rep["in"]["total"]["net"],
+                "out_trips": rep["out"]["total"]["trips"], "out_kg": rep["out"]["total"]["net"],
+                "pending": len(self.db.pending())}
 
     def camera_names(self):
         """[{id, name}] in screen order, e.g. {"id": "cam3", "name": "Tipping floor"}."""

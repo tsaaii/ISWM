@@ -133,6 +133,8 @@ See the cameras and the live weight from another city, with nothing opened on th
 
 A view pauses after 10 minutes (`LIVE_MAX_MINUTES`), so a forgotten browser tab can't use data all day. Cost: Cloud Run only runs while requests are open, so it's normally inside the free tier. The plant's cameras run only while someone is watching.
 
+**Dashboard for all plants.** A separate app, `iswm-dashboard`, shows every plant on one screen with login, today's totals, trips, a 14-day chart and these camera views. It reads this API with its own key. The plant sends today's totals and camera names on the site record at each sync, so the dashboard reads one record per plant instead of every trip.
+
 ## Live cameras on another computer
 
 **Built-in (easiest, same network).** In admin, under *Live view for other computers*, tick **Turn on**, set a viewer password and save. Admin then shows the address, for example `http://192.168.1.20:8090`. Open it in any browser on another PC or phone on the same network, with user `viewer` and the password you set. The page shows all cameras, the live weight and today's trips.
