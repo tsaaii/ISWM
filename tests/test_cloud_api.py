@@ -164,6 +164,16 @@ def test_remote_view_end_to_end(tmp_path, monkeypatch):
         r.close()
         assert ["cam3", "Windrow yard"] in state["cams"]
         assert state["plant_online"] and state["weight"] is not None
+        # newest single picture, answered at once (what dashboards use)
+        jpg_url = relay_url + "/v1/sites/iswm-donthali/live/cam3.jpg"
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            one = requests.get(jpg_url, headers={"X-API-Key": "viewkey"}, timeout=10)
+            if one.status_code == 200:
+                break
+            time.sleep(0.5)
+        assert one.status_code == 200 and one.content.startswith(b"\xff\xd8")
+        assert requests.get(jpg_url).status_code == 401
         page = requests.get(relay_url + "/live/iswm-donthali?key=viewkey").text
         assert "buttons(s.cams)" in page
         assert requests.get(relay_url + "/v1/plant/iswm-donthali/wanted", headers={"X-Site-Key": "bad"}).status_code == 401

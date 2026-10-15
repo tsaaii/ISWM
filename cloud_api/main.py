@@ -16,6 +16,7 @@ Endpoints (all JSON):
 
 Remote camera view (relay), see the "Remote camera view" part below:
     GET /live/<site>?key=<api key>       viewer page: cameras + live weight, from anywhere
+    GET /v1/sites/<site>/live/<cam>.jpg  newest picture of one camera (for dashboards)
 """
 import datetime as dt
 import json
@@ -257,20 +258,43 @@ def live_stream(site, cam):
     end = time.time() + VIEW_MINUTES * 60
 
     def gen():
-        last = None
+        last, sent = None, time.time()
         while time.time() < end:
             st["want"][cam] = time.time() + 12
             with st["cond"]:
                 st["cond"].wait(timeout=10)
                 frame = st["frames"].get(cam)
             if frame and frame is not last and time.time() - frame[1] < 15:
-                last = frame
+                last, sent = frame, time.time()
                 yield b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " + str(len(frame[0])).encode() + \
                     b"\r\n\r\n" + frame[0] + b"\r\n"
+            elif time.time() - sent > 5:
+                sent = time.time()
+                # nothing new: send two harmless bytes, so a viewer that has left is noticed
+                # and this connection is freed, instead of being held for the full view time
+                yield b"\r\n"
         st["want"].pop(cam, None)
 
     return Response(gen(), mimetype="multipart/x-mixed-replace; boundary=frame",
                     headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
+
+
+@app.get("/v1/sites/<site>/live/<cam>.jpg")
+def live_frame(site, cam):
+    """The newest picture of one camera, answered at once (204 while none is here yet).
+    Asking counts as watching for 12 seconds, so the plant keeps sending while someone asks
+    about once a second. Holds no connection open (for dashboards showing many cameras)."""
+    check_site(site)
+    cam_ok(cam)
+    st = live(site)
+    if request.args.get("q") in QUALITY:
+        st["q"] = request.args["q"]
+    st["want"][cam] = time.time() + 12
+    frame = st["frames"].get(cam)
+    if not frame or time.time() - frame[1] > 15:
+        return Response(status=204, headers={"Cache-Control": "no-store"})
+    return Response(frame[0], mimetype="image/jpeg",
+                    headers={"Cache-Control": "no-store", "X-Age": "%.1f" % (time.time() - frame[1])})
 
 
 @app.get("/v1/sites/<site>/live/state")
