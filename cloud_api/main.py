@@ -219,8 +219,27 @@ def plant_wanted(site):
     st = live(site)
     st["seen"] = time.time()
     take_cam_names(st)
+    try:  # the plant's health for the dashboard: weighbridge, cameras, records waiting to sync, version
+        status = json.loads(request.headers.get("X-Status") or "null")
+        if isinstance(status, dict) and len(json.dumps(status)) < 2000:
+            st["status"] = status
+    except ValueError:
+        pass
     w, q, f = QUALITY[st["q"]]
     return jsonify({"cams": wanted(st), "width": w, "quality": q, "fps": f})
+
+
+@app.get("/v1/live/status")
+def live_status_all():
+    """Every plant that has checked in with the relay since it started: online (checked in within a minute),
+    seconds since last check-in, and its health. One call for a whole status board; no Firestore reads."""
+    mine = allowed_sites()
+    now = time.time()
+    with LIVE_LOCK:
+        items = list(LIVE.items())
+    return jsonify({site: {"online": now - st["seen"] < 60, "seen_s": round(now - st["seen"]) if st["seen"] else None,
+                           "status": st.get("status"), "cams": st["cams"]}
+                    for site, st in items if st["seen"] and (not mine or site in mine)})
 
 
 @app.post("/v1/plant/<site>/frame/<cam>")
@@ -281,7 +300,7 @@ def live_state(site):
     return jsonify({"plant_online": now - st["seen"] < 60, "weight": st["weight"], "watching": wanted(st),
                     "frame_age": {c: round(now - f[1], 1) for c, f in st["frames"].items()},
                     "mb_sent": round(st["bytes"] / 1e6, 1), "max_minutes": VIEW_MINUTES, "quality": st["q"],
-                    "cams": st["cams"]})
+                    "cams": st["cams"], "status": st.get("status")})
 
 
 @app.get("/live/<site>")

@@ -231,9 +231,13 @@ class CloudSync:
         import datetime as dt
         day = dt.date.today()
         rep = self.db.report_daily(day)
+        start = dt.datetime.combine(day, dt.time())
+        hours = {"in": [0] * 24, "out": [0] * 24}  # vehicles weighed in each hour (48 small numbers)
+        for r in self.db.entries_between(start, start + dt.timedelta(days=1)):
+            hours[r["dir"]][int(r["created_at"][11:13])] += 1
         return {"date": day.isoformat(), "in_trips": rep["in"]["total"]["trips"], "in_kg": rep["in"]["total"]["net"],
                 "out_trips": rep["out"]["total"]["trips"], "out_kg": rep["out"]["total"]["net"],
-                "pending": len(self.db.pending())}
+                "pending": len(self.db.pending()), "in_by_hour": hours["in"], "out_by_hour": hours["out"]}
 
     def camera_names(self):
         """[{id, name}] in screen order, e.g. {"id": "cam3", "name": "Tipping floor"}."""

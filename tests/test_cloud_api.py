@@ -164,6 +164,10 @@ def test_remote_view_end_to_end(tmp_path, monkeypatch):
         r.close()
         assert ["cam3", "Windrow yard"] in state["cams"]
         assert state["plant_online"] and state["weight"] is not None
+        board = requests.get(relay_url + "/v1/live/status", headers={"X-API-Key": "viewkey"}).json()
+        st = board["iswm-donthali"]
+        assert st["online"] and st["status"]["ver"] and st["status"]["cams"] == 3 and "wb" in st["status"]
+        assert requests.get(relay_url + "/v1/live/status").status_code == 401
         page = requests.get(relay_url + "/live/iswm-donthali?key=viewkey").text
         assert "buttons(s.cams)" in page
         assert requests.get(relay_url + "/v1/plant/iswm-donthali/wanted", headers={"X-Site-Key": "bad"}).status_code == 401

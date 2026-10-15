@@ -70,7 +70,8 @@ class RemoteView:
 
     def ask(self, cfg):
         r = self._http().get(self._base(cfg) + "/wanted", headers={"X-Site-Key": cfg["site_key"],
-                                                                     "X-Cams": self.cam_names()}, timeout=15)
+                                                                     "X-Cams": self.cam_names(),
+                                                                     "X-Status": self.health()}, timeout=15)
         self.bytes += len(r.content) + 300  # + request and headers, roughly
         if r.status_code == 401:
             self.state, self.message = "error", "Relay refused the site key."
@@ -78,6 +79,20 @@ class RemoteView:
         r.raise_for_status()
         self.message = None
         return r.json()
+
+    def health(self):
+        """How the plant is doing, for the dashboard's status board (about 200 bytes, sent with each check-in)."""
+        from . import __version__
+        wb = self.svc.wb.live()
+        cams = self.svc.cams.status()
+        problems = [c["label"] for c in cams.values() if c.get("error") and c["error"] != "Not set up"]
+        try:
+            queued = len(self.svc.db.queue_waiting())
+        except Exception:
+            queued = None
+        return json.dumps({"ver": __version__, "wb": bool(wb.get("connected")), "kg": wb.get("weight"),
+                           "stable": bool(wb.get("stable")), "cams": len(cams), "cam_problems": problems[:8],
+                           "queued": queued, "sync": self.svc.cloud.state, "operator": self.svc.operator})
 
     def cam_names(self):
         """Camera ids and the names the admin gave them (e.g. "Tipping floor"), so the remote page shows them.
